@@ -774,6 +774,10 @@ export function normalizeLoadedProject(
     revealConfetti: mergedTemplate.revealConfetti ?? false,
     highlightSpokenOption: mergedTemplate.highlightSpokenOption ?? false,
     showIntroHook: mergedTemplate.showIntroHook ?? false,
+    introHookTemplateId: mergedTemplate.introHookTemplateId ?? DEFAULT_TEMPLATE.introHookTemplateId,
+    introHookBadge: typeof mergedTemplate.introHookBadge === 'string' ? mergedTemplate.introHookBadge : '',
+    introHookAccentColor:
+      typeof mergedTemplate.introHookAccentColor === 'string' ? mergedTemplate.introHookAccentColor : '',
     introHookText: mergedTemplate.introHookText ?? DEFAULT_TEMPLATE.introHookText,
     introHookDuration: sanitizeNumber(mergedTemplate.introHookDuration, 1.2),
     introHookAudio: mergedTemplate.introHookAudio?.dataUrl ? mergedTemplate.introHookAudio : undefined,

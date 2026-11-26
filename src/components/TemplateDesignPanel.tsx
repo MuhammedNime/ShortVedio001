@@ -18,6 +18,7 @@ import {
   Redo2,
   RefreshCw,
   RotateCcw,
+  Shuffle,
   Smartphone,
   Sparkles,
   Star,
@@ -29,6 +30,7 @@ import {
   Upload,
   UserCheck,
   Video,
+  Volume2,
   Wand2,
   X,
 } from 'lucide-react';
@@ -67,6 +69,7 @@ import {
   BuiltInSfxId,
   DEFAULT_PRIZE_LADDER,
   DEFAULT_TEMPLATE,
+  HOOK_TEMPLATES,
   OptionLabelStyle,
   OptionLayoutMode,
   OptionTextAlign,
@@ -89,6 +92,7 @@ import {
   QuestionSlide,
   QuestionTextAlign,
   RevealStyle,
+  STUDIO_THEME_ORDER,
   SlideTransitionStyle,
   TemplateSettings,
   ThemeApplyMode,
@@ -127,23 +131,73 @@ const ANIM_OPTIONS: { id: AnimationStyle; label: string }[] = [
 ];
 
 const ONE_CLICK_STYLES: { id: PresetId; label: string; emoji: string; accent: string }[] = [
+  { id: 'quizProSignature', label: 'كويز برو', emoji: '💎', accent: '#00B050' },
   { id: 'channelSand', label: 'أسلوب القناة', emoji: '📺', accent: '#EDD6A2' },
+  { id: 'auroraBorealis', label: 'الشفق القطبي', emoji: '✨', accent: '#2dd4bf' },
+  { id: 'tokyoDrift', label: 'طوكيو نيون', emoji: '🌆', accent: '#ec4899' },
+  { id: 'luxuryMarble', label: 'رخام ملكي', emoji: '🏛️', accent: '#c59b27' },
+  { id: 'matrixTerminal', label: 'المصفوفة', emoji: '💻', accent: '#22c55e' },
+  { id: 'samuraiInk', label: 'الساموراي', emoji: '⛩️', accent: '#dc2626' },
+  { id: 'desertMirage', label: 'سراب ذهبي', emoji: '🏜️', accent: '#f59e0b' },
+  { id: 'stealthCarbon', label: 'كاربون رياضي', emoji: '🏎️', accent: '#ef4444' },
+  { id: 'goldenQuizShow', label: 'مسرح الأضواء', emoji: '🎭', accent: '#fbbf24' },
   { id: 'islamicAndalusian', label: 'أندلسي فاخر', emoji: '🕌', accent: '#eab308' },
   { id: 'cosmicSpace', label: 'مجرة الفضاء', emoji: '🌌', accent: '#38bdf8' },
   { id: 'stadiumArena', label: 'ملعب الأبطال', emoji: '⚽', accent: '#22c55e' },
-  { id: 'ancientHistory', label: 'كنوز التاريخ', emoji: '🏺', accent: '#c9a24a' },
-  { id: 'millionaire', label: 'المليونير', emoji: '💎', accent: '#1a3b8e' },
+  { id: 'millionaire', label: 'المليونير', emoji: '👑', accent: '#1a3b8e' },
   { id: 'neonCyber', label: 'النيون', emoji: '⚡', accent: '#22d3ee' },
-  { id: 'tvShowGold', label: 'البث الذهبي', emoji: '🏆', accent: '#facc15' },
-  { id: 'crimsonArena', label: 'حلبة التحدي', emoji: '🔥', accent: '#f43f5e' },
 ];
+
+type ThemeFilterGroup = 'all' | 'new' | 'dark' | 'neon' | 'light';
+
+const NEW_PRO_THEME_IDS = new Set<PresetId>([
+  'quizProSignature',
+  'desertMirage',
+  'matrixTerminal',
+  'tokyoDrift',
+  'luxuryMarble',
+  'oceanAbyss',
+  'galacticRose',
+  'espressoLounge',
+  'comicPop',
+  'stealthCarbon',
+  'auroraBorealis',
+  'goldenQuizShow',
+  'pastelDream',
+  'samuraiInk',
+]);
+
+const LIGHT_THEME_IDS = new Set<PresetId>([
+  'channelSand',
+  'parchmentGold',
+  'mintEditorial',
+  'luxuryMarble',
+  'pastelDream',
+  'playfulKids',
+  'comicPop',
+]);
+
+const NEON_THEME_IDS = new Set<PresetId>([
+  'neonCyber',
+  'matrixTerminal',
+  'tokyoDrift',
+  'auroraBorealis',
+  'galacticRose',
+  'oceanAbyss',
+  'cosmicSpace',
+  'arcticCyan',
+]);
 
 const VIRAL_HOOK_PRESETS = [
   '90% يخطئون في السؤال الأخير! 🤯',
+  'تحدي الـ 5 ثوانٍ: هل أنت أذكى من الجميع؟ ⚡',
   'اختبر ثقافتك الإسلامية في 30 ثانية 🕌',
   'أذكى العقول فقط تحل هذا التحدي 🧠',
-  'تحدي سرعة: كم إجابة صح ستجمع؟ 🔥',
+  'مستوى عبقري فقط! كم نقطة ستجمع؟ 🧩',
+  'تحدي سرعة: لا تتردد في الإجابة! 🔥',
   'هل تستطيع الإجابة قبل انتهاء العداد؟ ⏳',
+  'سؤال حير الملايين.. ما اختيارك؟ 👀',
+  'إذا أجبت عن 4 من 4 فأنت أسطورة! 🏆',
 ];
 
 export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
@@ -186,6 +240,7 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
   const [brandKits, setBrandKits] = useState<ChannelBrandKit[]>(() => loadBrandKits());
   const [brandKitNameInput, setBrandKitNameInput] = useState('');
   const [activeDemoPose, setActiveDemoPose] = useState<PresenterPoseId | null>(null);
+  const [themeFilter, setThemeFilter] = useState<ThemeFilterGroup>('all');
   const noticeTimerRef = useRef<number | null>(null);
   const demoPoseTimerRef = useRef<number | null>(null);
 
@@ -419,6 +474,14 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
   const handleApplyOneClickStyle = (presetId: PresetId) => {
     onChange(applyStudioThemePreset(template, presetId), true);
     showToast('تم تطبيق الستايل بالكامل ✓');
+  };
+
+  const handleShuffleRandomTheme = () => {
+    const candidates = STUDIO_THEME_ORDER.filter((id) => id !== template.presetId);
+    const picked = candidates[Math.floor(Math.random() * candidates.length)] || 'quizProSignature';
+    onChange(applyStudioThemePreset(template, picked), true);
+    const label = PRESET_BACKDROPS.find((p) => p.id === picked)?.label || picked;
+    showToast(`تم تطبيق ثيم عشوائي: ${label} 🎲`);
   };
 
   const handleSaveCustomPreset = async () => {
@@ -815,14 +878,25 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
             <Sparkles className="w-3.5 h-3.5 text-[var(--gold)]" />
             <span>ستايلات متكاملة بكبسة زر</span>
           </div>
-          <button
-            type="button"
-            onClick={applyChannelPreset}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#00B050] hover:bg-[#00c85b] text-white text-[11px] font-bold transition-colors cursor-pointer"
-          >
-            <RotateCcw className="w-3 h-3" />
-            <span>الافتراضي</span>
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleShuffleRandomTheme}
+              title="اختيار وتطبيق ثيم إبداعي عشوائي"
+              className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-[var(--surface)] border border-[var(--pline)] hover:border-[var(--gold)] text-[var(--ptxt)] text-[11px] font-bold transition-colors cursor-pointer"
+            >
+              <Shuffle className="w-3 h-3 text-[var(--gold)]" />
+              <span>ثيم عشوائي</span>
+            </button>
+            <button
+              type="button"
+              onClick={applyChannelPreset}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#00B050] hover:bg-[#00c85b] text-white text-[11px] font-bold transition-colors cursor-pointer"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>الافتراضي</span>
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-3 gap-1.5">
@@ -1365,8 +1439,52 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
           </button>
         </div>
 
+        {/* Theme Category Filter + Random Shuffle */}
+        <div className="flex flex-wrap items-center justify-between gap-1.5">
+          <div className="flex flex-wrap items-center gap-1">
+            {(
+              [
+                { id: 'all', label: `الكل (${PRESET_BACKDROPS.length})` },
+                { id: 'new', label: 'جديد ✨' },
+                { id: 'dark', label: 'فخم وداكن' },
+                { id: 'neon', label: 'نيون وحماسي' },
+                { id: 'light', label: 'فاتح وأنيق' },
+              ] as { id: ThemeFilterGroup; label: string }[]
+            ).map((grp) => (
+              <button
+                key={grp.id}
+                type="button"
+                onClick={() => setThemeFilter(grp.id)}
+                className={`px-2 py-1 rounded-md text-[10px] font-bold transition-colors cursor-pointer ${
+                  themeFilter === grp.id
+                    ? 'bg-[#00B050] text-white'
+                    : 'bg-[var(--surface)] border border-[var(--pline)] text-[var(--pmuted)] hover:text-[var(--ptxt)]'
+                }`}
+              >
+                {grp.label}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={handleShuffleRandomTheme}
+            className="flex items-center gap-1 px-2 py-1 rounded-md bg-[var(--surface)] border border-[var(--gold)]/55 text-[10px] font-bold text-[var(--gold)] hover:bg-[var(--gold)]/10 cursor-pointer"
+          >
+            <Shuffle className="w-3 h-3" />
+            <span>عشوائي</span>
+          </button>
+        </div>
+
         <div className="grid grid-cols-3 gap-2">
-          {PRESET_BACKDROPS.map((preset) => {
+          {PRESET_BACKDROPS.filter((preset) => {
+            if (themeFilter === 'new') return NEW_PRO_THEME_IDS.has(preset.id);
+            if (themeFilter === 'light') return LIGHT_THEME_IDS.has(preset.id);
+            if (themeFilter === 'neon') return NEON_THEME_IDS.has(preset.id);
+            if (themeFilter === 'dark') {
+              return !LIGHT_THEME_IDS.has(preset.id) && !NEON_THEME_IDS.has(preset.id);
+            }
+            return true;
+          }).map((preset) => {
             const active =
               template.backgroundType === 'preset' && template.presetId === preset.id;
             return (
@@ -2945,13 +3063,43 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
                 placeholder="اختبر معلوماتك الآن!"
                 className="w-full px-3 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-xs text-[var(--ptxt)] focus:border-[#00B050] focus:outline-none"
               />
-              <div className="flex flex-wrap gap-1">
-                {VIRAL_HOOK_PRESETS.map((hookPreset) => (
+              <div className="flex flex-wrap gap-1.5">
+                {HOOK_TEMPLATES.map((tpl) => {
+                  const isActive = template.introHookTemplateId === tpl.id;
+                  return (
+                    <button
+                      key={tpl.id}
+                      type="button"
+                      onClick={() => {
+                        patch({
+                          introHookTemplateId: tpl.id,
+                          introHookText: tpl.hookText,
+                          introHookSfx: tpl.sfxId,
+                          introHookDuration: tpl.duration,
+                          introHookBadge: tpl.badge,
+                          introHookAccentColor: tpl.accentColor,
+                          ...(tpl.flashTeaser
+                            ? { introFlashTeaser: true, introFlashHookText: tpl.flashText }
+                            : { introFlashTeaser: false }),
+                        });
+                        soundEngine.previewBuiltInSfx(tpl.sfxId, 0.72);
+                      }}
+                      className={`px-2 py-1 rounded-md border text-[10px] font-bold cursor-pointer transition-colors ${
+                        isActive
+                          ? 'bg-[#00B050]/18 border-[#00B050] text-[#00B050] dark:text-[#6ee7b7]'
+                          : 'bg-[var(--panel)] border-[var(--pline)] hover:border-[#00B050] text-[var(--pmuted)] hover:text-[var(--ptxt)]'
+                      }`}
+                    >
+                      {tpl.emoji} {tpl.title}
+                    </button>
+                  );
+                })}
+                {VIRAL_HOOK_PRESETS.slice(0, 4).map((hookPreset) => (
                   <button
                     key={hookPreset}
                     type="button"
-                    onClick={() => patch({ introHookText: hookPreset })}
-                    className="px-2 py-0.5 rounded-md bg-[var(--panel)] border border-[var(--pline)] hover:border-[#00B050] text-[10px] font-semibold text-[var(--pmuted)] hover:text-[var(--ptxt)] cursor-pointer"
+                    onClick={() => patch({ introHookText: hookPreset, introHookTemplateId: 'custom' })}
+                    className="px-2 py-1 rounded-md bg-[var(--panel)] border border-[var(--pline)] hover:border-[#00B050] text-[10px] font-semibold text-[var(--pmuted)] hover:text-[var(--ptxt)] cursor-pointer"
                   >
                     {hookPreset}
                   </button>
@@ -2973,20 +3121,30 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
                   />
                 </label>
 
-                <label className="flex flex-col gap-1">
+                <div className="flex flex-col gap-1">
                   <span className="text-[11px] text-[var(--pmuted)]">مؤثر دخول الهوك (SFX)</span>
-                  <select
-                    value={template.introHookSfx ?? 'whoosh'}
-                    onChange={(e) => patch({ introHookSfx: e.target.value as BuiltInSfxId })}
-                    className="px-2.5 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] text-[var(--ptxt)] focus:border-[#00B050] focus:outline-none"
-                  >
-                    {BUILTIN_SFX_OPTIONS.map((sfx) => (
-                      <option key={sfx.id} value={sfx.id}>
-                        {sfx.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                  <div className="flex items-center gap-1">
+                    <select
+                      value={template.introHookSfx ?? 'whoosh'}
+                      onChange={(e) => patch({ introHookSfx: e.target.value as BuiltInSfxId })}
+                      className="flex-1 min-w-0 px-2 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] text-[var(--ptxt)] focus:border-[#00B050] focus:outline-none"
+                    >
+                      {BUILTIN_SFX_OPTIONS.map((sfx) => (
+                        <option key={sfx.id} value={sfx.id}>
+                          {sfx.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      title="سماع المؤثر الصوتي"
+                      onClick={() => soundEngine.previewBuiltInSfx(template.introHookSfx ?? 'whoosh', 0.78)}
+                      className="p-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] hover:border-[#00B050] text-[#00B050] cursor-pointer shrink-0"
+                    >
+                      <Volume2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* Hook Voiceover Controls: AI TTS + Mic Record + File Upload */}
@@ -3537,6 +3695,18 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
           />
           <span className="text-xs text-[var(--ptxt)]">
             إظهار عداد رقم السؤال وشريط التقدم أعلى الشاشة (سؤال 2 من 5)
+          </span>
+        </label>
+
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={Boolean(template.showVideoProgressBar)}
+            onChange={(e) => patch({ showVideoProgressBar: e.target.checked })}
+            className="w-4 h-4 accent-[#00B050] rounded cursor-pointer"
+          />
+          <span className="text-xs text-[var(--ptxt)]">
+            إظهار شريط تقدم سينمائي مستمر أعلى الفيديو كاملاً 🎬
           </span>
         </label>
 

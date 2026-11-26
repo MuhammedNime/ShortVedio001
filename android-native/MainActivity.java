@@ -12,8 +12,10 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
 import android.util.Base64;
+import android.view.View;
 import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
+import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.widget.Toast;
 
@@ -123,6 +125,14 @@ public class MainActivity extends BridgeActivity {
         if (this.bridge == null) return;
         WebView webView = this.bridge.getWebView();
         if (webView == null) return;
+
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        WebSettings settings = webView.getSettings();
+        if (settings != null) {
+            settings.setDomStorageEnabled(true);
+            settings.setDatabaseEnabled(true);
+            settings.setMediaPlaybackRequiresUserGesture(false);
+        }
 
         webView.addJavascriptInterface(new AndroidNativeBridge(), "AndroidNativeBridge");
         webView.setDownloadListener(new DownloadListener() {

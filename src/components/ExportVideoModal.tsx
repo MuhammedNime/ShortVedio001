@@ -88,6 +88,33 @@ interface ExportVideoModalProps extends SharedYouTubeProps {
 
 type ExportScopeMode = 'full' | 'single' | 'splitBatch';
 
+const EXPORT_PREFS_STORAGE_KEY = 'quizpro_export_prefs_v1';
+
+function loadSavedExportPrefs(): {
+  formatPref: ExportFormatPreference;
+  resPref: ExportResolutionPreference;
+} {
+  try {
+    const raw = window.localStorage.getItem(EXPORT_PREFS_STORAGE_KEY);
+    if (!raw) return { formatPref: 'auto', resPref: 'auto' };
+    const parsed = JSON.parse(raw) as {
+      formatPref?: ExportFormatPreference;
+      resPref?: ExportResolutionPreference;
+    };
+    const fmt: ExportFormatPreference =
+      parsed.formatPref === 'mp4' || parsed.formatPref === 'webm' || parsed.formatPref === 'auto'
+        ? parsed.formatPref
+        : 'auto';
+    const res: ExportResolutionPreference =
+      parsed.resPref === '720p' || parsed.resPref === '1080p' || parsed.resPref === 'auto'
+        ? parsed.resPref
+        : 'auto';
+    return { formatPref: fmt, resPref: res };
+  } catch {
+    return { formatPref: 'auto', resPref: 'auto' };
+  }
+}
+
 export const ExportVideoModal: React.FC<ExportVideoModalProps> = ({
   isOpen,
   project,
@@ -118,9 +145,10 @@ export const ExportVideoModal: React.FC<ExportVideoModalProps> = ({
   customThumbnailPreviewUrl,
   onOpenThumbnailStudio,
 }) => {
+  const initialExportPrefs = loadSavedExportPrefs();
   const [scopeMode, setScopeMode] = useState<ExportScopeMode>('full');
-  const [formatPref, setFormatPref] = useState<ExportFormatPreference>('auto');
-  const [resPref, setResPref] = useState<ExportResolutionPreference>('auto');
+  const [formatPref, setFormatPref] = useState<ExportFormatPreference>(initialExportPrefs.formatPref);
+  const [resPref, setResPref] = useState<ExportResolutionPreference>(initialExportPrefs.resPref);
   const [selectedSlideIdx, setSelectedSlideIdx] = useState(0);
   const [status, setStatus] = useState<'idle' | 'rendering' | 'done' | 'error'>('idle');
   const [progress, setProgress] = useState<ExportProgress>({
@@ -156,6 +184,17 @@ export const ExportVideoModal: React.FC<ExportVideoModalProps> = ({
   const livePreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const projectRef = useRef(project);
   projectRef.current = project;
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        EXPORT_PREFS_STORAGE_KEY,
+        JSON.stringify({ formatPref, resPref })
+      );
+    } catch {
+      // ignore storage errors
+    }
+  }, [formatPref, resPref]);
 
   const getActiveTargetSlides = (overrideMode?: ExportScopeMode, overrideSlideIdx?: number) => {
     const activeProject = projectRef.current;

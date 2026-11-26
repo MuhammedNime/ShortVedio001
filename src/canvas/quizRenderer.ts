@@ -23,6 +23,7 @@ import {
   getIntroHookDuration,
   getSlidePrizeTiers,
   getSlidesContentDuration,
+  getTotalDuration,
 } from '../types/quiz';
 import { drawSmartQuizText, hasMathSyntax, measureSmartQuizTextHeight } from './mathCanvasRenderer';
 import { computeAiPresenterFrameTiming } from './aiPresenterMedia';
@@ -392,7 +393,9 @@ function isBackgroundDark(template: TemplateSettings): boolean {
     if (
       template.presetId === 'channelSand' ||
       template.presetId === 'parchmentGold' ||
-      template.presetId === 'mintEditorial'
+      template.presetId === 'mintEditorial' ||
+      template.presetId === 'luxuryMarble' ||
+      template.presetId === 'pastelDream'
     ) {
       return template.bgDimOpacity >= 0.35;
     }
@@ -1378,6 +1381,279 @@ function drawProceduralPresetDecor(
       bctx.fill();
     }
     bctx.restore();
+  } else if (presetId === 'quizProSignature') {
+    bctx.save();
+    for (const sx of [W * 0.14, W * 0.86]) {
+      const ray = bctx.createLinearGradient(sx, 0, W * 0.5, H * 0.7);
+      ray.addColorStop(0, 'rgba(0, 176, 80, 0.20)');
+      ray.addColorStop(0.55, 'rgba(212, 167, 58, 0.08)');
+      ray.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      bctx.fillStyle = ray;
+      bctx.beginPath();
+      bctx.moveTo(sx - 55, 0);
+      bctx.lineTo(sx + 55, 0);
+      bctx.lineTo(W * 0.5 + W * 0.34, H * 0.82);
+      bctx.lineTo(W * 0.5 - W * 0.34, H * 0.82);
+      bctx.closePath();
+      bctx.fill();
+    }
+    bctx.strokeStyle = 'rgba(212, 167, 58, 0.14)';
+    bctx.lineWidth = 2;
+    const dcx = W * 0.5;
+    const dcy = H * 0.38;
+    for (const r of [W * 0.2, W * 0.34, W * 0.48]) {
+      bctx.beginPath();
+      bctx.moveTo(dcx, dcy - r);
+      bctx.lineTo(dcx + r, dcy);
+      bctx.lineTo(dcx, dcy + r);
+      bctx.lineTo(dcx - r, dcy);
+      bctx.closePath();
+      bctx.stroke();
+    }
+    bctx.restore();
+  } else if (presetId === 'desertMirage') {
+    bctx.save();
+    const sunGrad = bctx.createRadialGradient(W * 0.5, H * 0.25, 16, W * 0.5, H * 0.25, W * 0.44);
+    sunGrad.addColorStop(0, 'rgba(251, 191, 36, 0.30)');
+    sunGrad.addColorStop(0.5, 'rgba(234, 88, 12, 0.14)');
+    sunGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    bctx.fillStyle = sunGrad;
+    bctx.fillRect(0, 0, W, H);
+    // Layered desert dunes silhouette at lower third
+    bctx.fillStyle = 'rgba(124, 45, 18, 0.28)';
+    bctx.beginPath();
+    bctx.moveTo(0, H * 0.78);
+    bctx.quadraticCurveTo(W * 0.28, H * 0.68, W * 0.56, H * 0.77);
+    bctx.quadraticCurveTo(W * 0.82, H * 0.84, W, H * 0.74);
+    bctx.lineTo(W, H);
+    bctx.lineTo(0, H);
+    bctx.closePath();
+    bctx.fill();
+    bctx.fillStyle = 'rgba(28, 13, 6, 0.42)';
+    bctx.beginPath();
+    bctx.moveTo(0, H * 0.86);
+    bctx.quadraticCurveTo(W * 0.35, H * 0.78, W * 0.7, H * 0.87);
+    bctx.quadraticCurveTo(W * 0.88, H * 0.91, W, H * 0.84);
+    bctx.lineTo(W, H);
+    bctx.lineTo(0, H);
+    bctx.closePath();
+    bctx.fill();
+    bctx.restore();
+  } else if (presetId === 'matrixTerminal') {
+    bctx.save();
+    bctx.strokeStyle = 'rgba(34, 197, 94, 0.10)';
+    bctx.lineWidth = 2;
+    const cols = 16;
+    const colStep = W / cols;
+    for (let i = 1; i < cols; i++) {
+      const x = i * colStep;
+      const dashOffset = (i * 79) % 140;
+      bctx.setLineDash([14, 10, 4, 16]);
+      bctx.lineDashOffset = dashOffset;
+      bctx.beginPath();
+      bctx.moveTo(x, 0);
+      bctx.lineTo(x, H);
+      bctx.stroke();
+    }
+    bctx.setLineDash([]);
+    bctx.strokeStyle = 'rgba(74, 222, 128, 0.22)';
+    bctx.lineWidth = 3;
+    bctx.strokeRect(24, 24, W - 48, H - 48);
+    bctx.restore();
+  } else if (presetId === 'tokyoDrift') {
+    bctx.save();
+    const sunCx = W * 0.5;
+    const sunCy = H * 0.34;
+    const sunR = W * 0.24;
+    const sGrad = bctx.createLinearGradient(0, sunCy - sunR, 0, sunCy + sunR);
+    sGrad.addColorStop(0, 'rgba(244, 114, 182, 0.34)');
+    sGrad.addColorStop(1, 'rgba(251, 146, 60, 0.16)');
+    bctx.fillStyle = sGrad;
+    bctx.beginPath();
+    bctx.arc(sunCx, sunCy, sunR, 0, Math.PI * 2);
+    bctx.fill();
+    // Perspective synthwave grid in bottom 32%
+    const horizonY = H * 0.68;
+    bctx.strokeStyle = 'rgba(6, 182, 212, 0.22)';
+    bctx.lineWidth = 1.6;
+    for (let i = -8; i <= 8; i++) {
+      bctx.beginPath();
+      bctx.moveTo(W * 0.5 + i * (W * 0.045), horizonY);
+      bctx.lineTo(W * 0.5 + i * (W * 0.16), H);
+      bctx.stroke();
+    }
+    for (let r = 0; r < 6; r++) {
+      const y = horizonY + Math.pow(r / 5, 1.45) * (H - horizonY);
+      bctx.beginPath();
+      bctx.moveTo(0, y);
+      bctx.lineTo(W, y);
+      bctx.stroke();
+    }
+    bctx.restore();
+  } else if (presetId === 'luxuryMarble') {
+    bctx.save();
+    bctx.strokeStyle = 'rgba(197, 155, 39, 0.16)';
+    bctx.lineWidth = 3;
+    for (let v = 0; v < 5; v++) {
+      bctx.beginPath();
+      const startY = H * (0.12 + v * 0.18);
+      bctx.moveTo(0, startY);
+      bctx.bezierCurveTo(
+        W * 0.32,
+        startY - 60 + v * 25,
+        W * 0.68,
+        startY + 80 - v * 20,
+        W,
+        startY + 35
+      );
+      bctx.stroke();
+    }
+    bctx.strokeStyle = 'rgba(197, 155, 39, 0.28)';
+    bctx.lineWidth = 3;
+    bctx.strokeRect(26, 26, W - 52, H - 52);
+    bctx.restore();
+  } else if (presetId === 'oceanAbyss') {
+    bctx.save();
+    const caustic = bctx.createRadialGradient(W * 0.5, H * 0.15, 20, W * 0.5, H * 0.15, W * 0.6);
+    caustic.addColorStop(0, 'rgba(34, 211, 238, 0.22)');
+    caustic.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    bctx.fillStyle = caustic;
+    bctx.fillRect(0, 0, W, H);
+    bctx.strokeStyle = 'rgba(56, 189, 248, 0.12)';
+    bctx.lineWidth = 2;
+    for (let i = 0; i < 4; i++) {
+      const wy = H * (0.64 + i * 0.08);
+      bctx.beginPath();
+      bctx.moveTo(0, wy);
+      bctx.bezierCurveTo(W * 0.33, wy - 44, W * 0.66, wy + 44, W, wy);
+      bctx.stroke();
+    }
+    bctx.restore();
+  } else if (presetId === 'galacticRose') {
+    bctx.save();
+    const neb1 = bctx.createRadialGradient(W * 0.25, H * 0.25, 20, W * 0.25, H * 0.25, W * 0.52);
+    neb1.addColorStop(0, 'rgba(244, 114, 182, 0.22)');
+    neb1.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    bctx.fillStyle = neb1;
+    bctx.fillRect(0, 0, W, H);
+    const neb2 = bctx.createRadialGradient(W * 0.78, H * 0.72, 20, W * 0.78, H * 0.72, W * 0.5);
+    neb2.addColorStop(0, 'rgba(192, 132, 252, 0.20)');
+    neb2.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    bctx.fillStyle = neb2;
+    bctx.fillRect(0, 0, W, H);
+    bctx.strokeStyle = 'rgba(251, 207, 232, 0.10)';
+    bctx.lineWidth = 2;
+    bctx.beginPath();
+    bctx.ellipse(W * 0.5, H * 0.45, W * 0.44, H * 0.18, -0.22, 0, Math.PI * 2);
+    bctx.stroke();
+    bctx.restore();
+  } else if (presetId === 'espressoLounge') {
+    bctx.save();
+    bctx.strokeStyle = 'rgba(217, 119, 6, 0.15)';
+    bctx.lineWidth = 2.5;
+    for (const r of [W * 0.2, W * 0.34, W * 0.48]) {
+      bctx.beginPath();
+      bctx.arc(W * 0.5, H * 0.48, r, 0, Math.PI * 2);
+      bctx.stroke();
+    }
+    bctx.strokeStyle = 'rgba(245, 158, 11, 0.22)';
+    bctx.lineWidth = 3;
+    bctx.strokeRect(30, 30, W - 60, H - 60);
+    bctx.restore();
+  } else if (presetId === 'comicPop') {
+    bctx.save();
+    const cx = W * 0.5;
+    const cy = H * 0.45;
+    const rayCount = 16;
+    const outerR = Math.max(W, H) * 0.9;
+    bctx.fillStyle = 'rgba(250, 204, 21, 0.08)';
+    for (let i = 0; i < rayCount; i++) {
+      const a0 = (i * Math.PI * 2) / rayCount;
+      const a1 = a0 + Math.PI / rayCount / 1.5;
+      bctx.beginPath();
+      bctx.moveTo(cx, cy);
+      bctx.lineTo(cx + Math.cos(a0) * outerR, cy + Math.sin(a0) * outerR);
+      bctx.lineTo(cx + Math.cos(a1) * outerR, cy + Math.sin(a1) * outerR);
+      bctx.closePath();
+      bctx.fill();
+    }
+    bctx.restore();
+  } else if (presetId === 'stealthCarbon') {
+    bctx.save();
+    bctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+    bctx.lineWidth = 2;
+    const step = 36;
+    for (let i = -H; i < W + H; i += step) {
+      bctx.beginPath();
+      bctx.moveTo(i, 0);
+      bctx.lineTo(i + H, H);
+      bctx.stroke();
+    }
+    // Twin crimson racing edge bars
+    bctx.fillStyle = 'rgba(239, 68, 68, 0.35)';
+    bctx.fillRect(0, 0, 10, H);
+    bctx.fillRect(W - 10, 0, 10, H);
+    bctx.restore();
+  } else if (presetId === 'auroraBorealis') {
+    bctx.save();
+    const a1 = bctx.createLinearGradient(0, 0, W, H * 0.55);
+    a1.addColorStop(0, 'rgba(45, 212, 191, 0.24)');
+    a1.addColorStop(0.5, 'rgba(129, 140, 248, 0.16)');
+    a1.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    bctx.fillStyle = a1;
+    bctx.beginPath();
+    bctx.moveTo(0, H * 0.12);
+    bctx.bezierCurveTo(W * 0.35, H * 0.32, W * 0.68, H * 0.04, W, H * 0.26);
+    bctx.lineTo(W, H * 0.62);
+    bctx.bezierCurveTo(W * 0.65, H * 0.4, W * 0.32, H * 0.68, 0, H * 0.45);
+    bctx.closePath();
+    bctx.fill();
+    bctx.restore();
+  } else if (presetId === 'goldenQuizShow') {
+    bctx.save();
+    for (const sx of [W * 0.2, W * 0.8]) {
+      const beam = bctx.createLinearGradient(sx, 0, W * 0.5, H * 0.78);
+      beam.addColorStop(0, 'rgba(251, 191, 36, 0.22)');
+      beam.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      bctx.fillStyle = beam;
+      bctx.beginPath();
+      bctx.moveTo(sx - 60, 0);
+      bctx.lineTo(sx + 60, 0);
+      bctx.lineTo(W * 0.5 + W * 0.36, H * 0.84);
+      bctx.lineTo(W * 0.5 - W * 0.36, H * 0.84);
+      bctx.closePath();
+      bctx.fill();
+    }
+    bctx.restore();
+  } else if (presetId === 'pastelDream') {
+    bctx.save();
+    const clouds = [
+      { x: 0.2, y: 0.16, r: W * 0.25, c: 'rgba(244, 114, 182, 0.14)' },
+      { x: 0.82, y: 0.28, r: W * 0.22, c: 'rgba(192, 132, 252, 0.14)' },
+      { x: 0.22, y: 0.82, r: W * 0.26, c: 'rgba(125, 211, 252, 0.14)' },
+      { x: 0.8, y: 0.78, r: W * 0.2, c: 'rgba(251, 191, 36, 0.10)' },
+    ];
+    for (const cl of clouds) {
+      bctx.beginPath();
+      bctx.arc(W * cl.x, H * cl.y, cl.r, 0, Math.PI * 2);
+      bctx.fillStyle = cl.c;
+      bctx.fill();
+    }
+    bctx.restore();
+  } else if (presetId === 'samuraiInk') {
+    bctx.save();
+    const sunGrad = bctx.createRadialGradient(W * 0.5, H * 0.29, 10, W * 0.5, H * 0.29, W * 0.26);
+    sunGrad.addColorStop(0, 'rgba(220, 38, 38, 0.34)');
+    sunGrad.addColorStop(0.85, 'rgba(220, 38, 38, 0.18)');
+    sunGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    bctx.fillStyle = sunGrad;
+    bctx.beginPath();
+    bctx.arc(W * 0.5, H * 0.29, W * 0.26, 0, Math.PI * 2);
+    bctx.fill();
+    bctx.strokeStyle = 'rgba(212, 167, 58, 0.24)';
+    bctx.lineWidth = 3;
+    bctx.strokeRect(24, 24, W - 48, H - 48);
+    bctx.restore();
   }
 }
 
@@ -1497,11 +1773,21 @@ function drawAmbientParticles(
   const isNeon =
     template.presetId === 'neonCyber' ||
     template.presetId === 'cosmicSpace' ||
+    template.presetId === 'tokyoDrift' ||
+    template.presetId === 'auroraBorealis' ||
     template.borderStyle === 'gradientNeon';
+  const isMatrix = template.presetId === 'matrixTerminal';
+  const isEmeraldPro = template.presetId === 'quizProSignature';
   const isSpace = template.presetId === 'cosmicSpace';
   const isStadium = template.presetId === 'stadiumArena';
-  const isCyan = template.presetId === 'arcticCyan';
-  const isSunset = template.presetId === 'sunsetCinema' || template.presetId === 'crimsonArena';
+  const isCyan = template.presetId === 'arcticCyan' || template.presetId === 'oceanAbyss';
+  const isRose = template.presetId === 'galacticRose' || template.presetId === 'pastelDream';
+  const isSunset =
+    template.presetId === 'sunsetCinema' ||
+    template.presetId === 'crimsonArena' ||
+    template.presetId === 'desertMirage' ||
+    template.presetId === 'stealthCarbon' ||
+    template.presetId === 'samuraiInk';
   const isGold =
     template.presetId === 'millionaire' ||
     template.presetId === 'tvShowGold' ||
@@ -1511,6 +1797,9 @@ function drawAmbientParticles(
     template.presetId === 'ramadanLantern' ||
     template.presetId === 'islamicAndalusian' ||
     template.presetId === 'ancientHistory' ||
+    template.presetId === 'goldenQuizShow' ||
+    template.presetId === 'espressoLounge' ||
+    template.presetId === 'luxuryMarble' ||
     template.borderStyle === 'gradientGold';
 
   ctx.save();
@@ -1525,23 +1814,33 @@ function drawAmbientParticles(
     const radius = 3 + (i % 4) * 2.5;
     const alpha = 0.18 + 0.26 * (0.5 + 0.5 * Math.sin(globalTime * 2.1 + i * 1.3));
 
-    const color = isStadium
-      ? i % 2 === 0
-        ? `rgba(74, 222, 128, ${alpha.toFixed(3)})`
-        : `rgba(255, 255, 255, ${(alpha * 0.9).toFixed(3)})`
-      : isNeon
+    const color = isMatrix
+      ? `rgba(74, 222, 128, ${alpha.toFixed(3)})`
+      : isEmeraldPro
         ? i % 2 === 0
-          ? `rgba(56, 189, 248, ${alpha.toFixed(3)})`
-          : `rgba(192, 132, 252, ${alpha.toFixed(3)})`
-        : isCyan
-          ? `rgba(186, 230, 253, ${alpha.toFixed(3)})`
-          : isSunset
+          ? `rgba(0, 176, 80, ${alpha.toFixed(3)})`
+          : `rgba(251, 211, 141, ${alpha.toFixed(3)})`
+        : isStadium
+          ? i % 2 === 0
+            ? `rgba(74, 222, 128, ${alpha.toFixed(3)})`
+            : `rgba(255, 255, 255, ${(alpha * 0.9).toFixed(3)})`
+          : isRose
             ? i % 2 === 0
-              ? `rgba(251, 146, 60, ${alpha.toFixed(3)})`
-              : `rgba(244, 63, 94, ${alpha.toFixed(3)})`
-            : isGold
-              ? `rgba(251, 211, 141, ${alpha.toFixed(3)})`
-              : `rgba(255, 255, 255, ${alpha.toFixed(3)})`;
+              ? `rgba(244, 114, 182, ${alpha.toFixed(3)})`
+              : `rgba(192, 132, 252, ${alpha.toFixed(3)})`
+            : isNeon
+              ? i % 2 === 0
+                ? `rgba(56, 189, 248, ${alpha.toFixed(3)})`
+                : `rgba(192, 132, 252, ${alpha.toFixed(3)})`
+              : isCyan
+                ? `rgba(186, 230, 253, ${alpha.toFixed(3)})`
+                : isSunset
+                  ? i % 2 === 0
+                    ? `rgba(251, 146, 60, ${alpha.toFixed(3)})`
+                    : `rgba(244, 63, 94, ${alpha.toFixed(3)})`
+                  : isGold
+                    ? `rgba(251, 211, 141, ${alpha.toFixed(3)})`
+                    : `rgba(255, 255, 255, ${alpha.toFixed(3)})`;
 
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, Math.PI * 2);
@@ -3315,6 +3614,43 @@ export function computeStageLayerLayout(
   };
 }
 
+function drawCinematicVideoProgressBar(
+  ctx: CanvasRenderingContext2D,
+  template: TemplateSettings,
+  globalTime: number,
+  slides: QuestionSlide[],
+  timing: TimingSettings,
+  audio: AudioSettings,
+  W: number
+): void {
+  if (!template.showVideoProgressBar || slides.length === 0) return;
+  const totalDur = Math.max(0.1, getTotalDuration(slides, timing, audio, template));
+  const progress = clamp01(globalTime / totalDur);
+  const barH = template.aspectRatio === '16:9' ? 8 : 10;
+  const fillW = W * progress;
+  const accent =
+    (template.videoProgressBarColor || '').trim() ||
+    template.correctColor ||
+    '#00B050';
+
+  ctx.save();
+  ctx.fillStyle = isBackgroundDark(template)
+    ? 'rgba(255, 255, 255, 0.14)'
+    : 'rgba(0, 0, 0, 0.12)';
+  ctx.fillRect(0, 0, W, barH);
+
+  if (fillW > 0) {
+    const grad = ctx.createLinearGradient(W, 0, Math.max(0, W - fillW), 0);
+    grad.addColorStop(0, accent);
+    grad.addColorStop(1, template.questionBorderColor || '#d4a73a');
+    ctx.shadowColor = accent;
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = grad;
+    ctx.fillRect(W - fillW, 0, fillW, barH);
+  }
+  ctx.restore();
+}
+
 export function renderQuizFrame(
   ctx: CanvasRenderingContext2D,
   globalTime: number,
@@ -3417,6 +3753,7 @@ export function renderQuizFrame(
       ctx.restore();
       ctx.restore();
       drawBrandWatermark(ctx, template, globalTime, W, H, fontStack);
+      drawCinematicVideoProgressBar(ctx, template, globalTime, slides, timing, audio, W);
       ctx.restore();
       return;
     }
@@ -3496,6 +3833,10 @@ export function renderQuizFrame(
       const cardCX = isWide ? W * 0.71 : W / 2;
       const cardCY = isWide ? H / 2 : Math.max(cardH / 2 + 120, heroY - 46 - cardH / 2);
 
+      const hookBadgeText = (template.introHookBadge || '').trim();
+      const hookAccent = (template.introHookAccentColor || '').trim();
+      const cardBorderCol = hookAccent || template.questionBorderColor;
+
       ctx.save();
       ctx.translate(cardCX, cardCY);
       ctx.scale(popScale, popScale);
@@ -3508,15 +3849,46 @@ export function renderQuizFrame(
         fillColorHex: template.questionBoxColor,
         fillRgba: hexToRgba(template.questionBoxColor, Math.max(0.88, template.questionBoxOpacity)),
         opacity: Math.max(0.88, template.questionBoxOpacity),
-        borderColor: template.questionBorderColor,
+        borderColor: cardBorderCol,
         borderWidth: Math.max(4, template.questionBorderWidth),
         boxStyle,
         borderStyle,
         boxGloss: template.boxGloss,
         enhanced: template.enhanceAppearance ?? true,
         shadowIntensity,
-        glowIntensity: Math.max(0.35, glowIntensity),
+        glowIntensity: Math.max(hookAccent ? 0.52 : 0.35, glowIntensity),
       });
+      if (hookBadgeText) {
+        const badgeFill = hookAccent || template.badgeBgColor || '#f59e0b';
+        ctx.font = `800 ${isWide ? 30 : 28}px ${fontStack}`;
+        ctx.direction = 'rtl';
+        const bw = Math.min(cardW - 48, Math.max(220, ctx.measureText(hookBadgeText).width + 64));
+        const bh = 54;
+        drawStyledBoxContainer(ctx, {
+          x: -bw / 2,
+          y: -cardH / 2 - bh / 2 - 4,
+          w: bw,
+          h: bh,
+          radius: bh / 2,
+          fillColorHex: badgeFill,
+          fillRgba: hexToRgba(badgeFill, 0.98),
+          opacity: 0.98,
+          borderColor: '#FFFFFF',
+          borderWidth: 3,
+          boxStyle: 'pill3d',
+          borderStyle: 'solid',
+          boxGloss: true,
+          enhanced: true,
+          shadowIntensity: 1,
+          glowIntensity: 0.35,
+        });
+        ctx.fillStyle = '#0f172a';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(hookBadgeText, 0, -cardH / 2 - 4);
+      }
+      ctx.font = `900 ${isWide ? 56 : 54}px ${fontStack}`;
+      ctx.direction = 'rtl';
       ctx.fillStyle = template.questionTextColor;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -3528,9 +3900,14 @@ export function renderQuizFrame(
       ctx.restore();
 
       drawBrandWatermark(ctx, template, globalTime, W, H, fontStack);
+      drawCinematicVideoProgressBar(ctx, template, globalTime, slides, timing, audio, W);
       ctx.restore();
       return;
     }
+
+    const hookBadgeText = (template.introHookBadge || '').trim();
+    const hookAccent = (template.introHookAccentColor || '').trim();
+    const cardBorderCol = hookAccent || template.questionBorderColor;
 
     ctx.save();
     ctx.globalAlpha = alpha;
@@ -3553,17 +3930,49 @@ export function renderQuizFrame(
       fillColorHex: template.questionBoxColor,
       fillRgba: hexToRgba(template.questionBoxColor, Math.max(0.85, template.questionBoxOpacity)),
       opacity: Math.max(0.85, template.questionBoxOpacity),
-      borderColor: template.questionBorderColor,
+      borderColor: cardBorderCol,
       borderWidth: Math.max(4, template.questionBorderWidth),
       boxStyle,
       borderStyle,
       boxGloss: template.boxGloss,
       enhanced: template.enhanceAppearance ?? true,
       shadowIntensity,
-      glowIntensity: Math.max(0.35, glowIntensity),
+      glowIntensity: Math.max(hookAccent ? 0.55 : 0.35, glowIntensity),
       wingExtensions: boxStyle === 'millionaireHex',
     });
 
+    if (hookBadgeText) {
+      const badgeFill = hookAccent || template.badgeBgColor || '#f59e0b';
+      ctx.font = `800 ${isWide ? 34 : 32}px ${fontStack}`;
+      ctx.direction = 'rtl';
+      const bw = Math.min(cardW - 60, Math.max(240, ctx.measureText(hookBadgeText).width + 72));
+      const bh = 60;
+      drawStyledBoxContainer(ctx, {
+        x: -bw / 2,
+        y: -cardH / 2 - bh / 2 - 6,
+        w: bw,
+        h: bh,
+        radius: bh / 2,
+        fillColorHex: badgeFill,
+        fillRgba: hexToRgba(badgeFill, 0.98),
+        opacity: 0.98,
+        borderColor: '#FFFFFF',
+        borderWidth: 3,
+        boxStyle: 'pill3d',
+        borderStyle: 'solid',
+        boxGloss: true,
+        enhanced: true,
+        shadowIntensity: 1,
+        glowIntensity: 0.4,
+      });
+      ctx.fillStyle = '#0f172a';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(hookBadgeText, 0, -cardH / 2 - 6);
+    }
+
+    ctx.font = `900 ${isWide ? 72 : 66}px ${fontStack}`;
+    ctx.direction = 'rtl';
     ctx.fillStyle = template.questionTextColor;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -3582,6 +3991,7 @@ export function renderQuizFrame(
         isIdleAfterSpeech: aiIntroTiming.isIdleAfterSpeech,
       });
     }
+    drawCinematicVideoProgressBar(ctx, template, globalTime, slides, timing, audio, W);
     ctx.restore();
     return;
   }
@@ -3744,6 +4154,7 @@ export function renderQuizFrame(
       ctx.restore();
 
       drawBrandWatermark(ctx, template, globalTime, W, H, fontStack);
+      drawCinematicVideoProgressBar(ctx, template, globalTime, slides, timing, audio, W);
       ctx.restore();
       return;
     }
@@ -3885,6 +4296,7 @@ export function renderQuizFrame(
         isIdleAfterSpeech: aiOutroTiming.isIdleAfterSpeech,
       });
     }
+    drawCinematicVideoProgressBar(ctx, template, globalTime, slides, timing, audio, W);
     ctx.restore();
     return;
   }
@@ -5593,6 +6005,8 @@ export function renderQuizFrame(
     const captionState = computeActiveCaptionState(slide, localTime, schedule);
     drawDynamicCaptionsOverlay(ctx, captionState, template, W, H, fontStack);
   }
+
+  drawCinematicVideoProgressBar(ctx, template, globalTime, slides, timing, audio, W);
 
   // Collect exact stage hitboxes for interactive preview dragging (account for globalScale around H*0.52)
   const mapScaledBox = (cx: number, cy: number, bw: number, bh: number) => {

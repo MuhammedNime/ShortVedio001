@@ -24,14 +24,16 @@ import {
   Trash2,
   Video,
   Volume2,
+  Zap,
 } from 'lucide-react';
-import { soundEngine } from '../audio/soundEngine';
+import { BUILTIN_SFX_OPTIONS, soundEngine } from '../audio/soundEngine';
 import {
   AI_VOICE_OPTIONS,
   AiVoiceMode,
   AiVoiceName,
   adviseQuestionBankPlan,
   generateAiQuizSlides,
+  generateSingleTtsClip,
   generateSlideVoiceoverSafe,
 } from '../services/aiClient';
 import {
@@ -65,7 +67,16 @@ import {
   markBankQuestionsUsed,
   seedAllStarterBanksIfNeeded,
 } from '../storage/questionBankVault';
-import { QUIZ_CATEGORIES, QuestionSlide, QuizCategory } from '../types/quiz';
+import {
+  BuiltInSfxId,
+  HOOK_TEMPLATES,
+  HookTemplatePreset,
+  QUIZ_CATEGORIES,
+  QuestionSlide,
+  QuizCategory,
+  SlideAudioClip,
+  TemplateSettings,
+} from '../types/quiz';
 import { isAndroidNativeApp, saveOrDownloadBlob } from '../utils/nativeDownload';
 import { TtsQuotaBanner } from './TtsQuotaBanner';
 
@@ -75,15 +86,30 @@ interface AiGeneratorPanelProps {
   vaultRefreshTrigger?: number;
   aiPresenterConfigured?: boolean;
   hasAiPresenter?: boolean;
+  hasExistingSlides?: boolean;
+  currentTemplate?: Pick<
+    TemplateSettings,
+    | 'showIntroHook'
+    | 'introHookTemplateId'
+    | 'introHookText'
+    | 'introHookDuration'
+    | 'introHookSfx'
+    | 'introHookBadge'
+    | 'introHookAccentColor'
+    | 'introFlashTeaser'
+    | 'introFlashHookText'
+  >;
   onOpenAiPresenterStudio?: () => void;
   onOpenLargeVault?: () => void;
   onVoiceChange: (voice: AiVoiceName) => void;
+  onApplyHookOnly?: (hookPatch: Partial<TemplateSettings>) => void;
   onInsertSlides: (
     slides: QuestionSlide[],
     mode: 'append' | 'replace',
     enableAutoSync: boolean,
     warningMessage?: string,
-    themePreset?: boolean | 'math' | 'islamic'
+    themePreset?: boolean | 'math' | 'islamic',
+    hookTemplatePatch?: Partial<TemplateSettings>
   ) => void;
 }
 
@@ -193,11 +219,15 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
   vaultRefreshTrigger = 0,
   aiPresenterConfigured = false,
   hasAiPresenter = false,
+  hasExistingSlides = false,
+  currentTemplate,
   onOpenAiPresenterStudio,
   onOpenLargeVault,
   onVoiceChange,
+  onApplyHookOnly,
   onInsertSlides,
 }) => {
+  const defaultHookPreset = HOOK_TEMPLATES[0];
   const [subTab, setSubTab] = useState<AiPanelSubTab>('direct');
   const [selectedCategory, setSelectedCategory] = useState<QuizCategory>('general');
   const [contentType, setContentType] = useState<
@@ -213,6 +243,38 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
   const [isGenerating, setIsGenerating] = useState(false);
   const [statusText, setStatusText] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+
+  // Hook Templates State (intro slide + custom SFX)
+  const [hookEnabled, setHookEnabled] = useState<boolean>(() =>
+    currentTemplate ? (currentTemplate.showIntroHook ?? true) : true
+  );
+  const [selectedHookId, setSelectedHookId] = useState<string>(() =>
+    currentTemplate?.showIntroHook && currentTemplate.introHookTemplateId
+      ? currentTemplate.introHookTemplateId
+      : defaultHookPreset.id
+  );
+  const [hookText, setHookText] = useState<string>(() =>
+    currentTemplate?.showIntroHook && currentTemplate.introHookText
+      ? currentTemplate.introHookText
+      : defaultHookPreset.hookText
+  );
+  const [hookSfx, setHookSfx] = useState<BuiltInSfxId>(() =>
+    currentTemplate?.showIntroHook && currentTemplate.introHookSfx
+      ? currentTemplate.introHookSfx
+      : defaultHookPreset.sfxId
+  );
+  const [hookDuration, setHookDuration] = useState<number>(() =>
+    currentTemplate?.showIntroHook && currentTemplate.introHookDuration
+      ? currentTemplate.introHookDuration
+      : defaultHookPreset.duration
+  );
+  const [hookFlashTeaser, setHookFlashTeaser] = useState<boolean>(() =>
+    Boolean(currentTemplate?.showIntroHook && currentTemplate.introFlashTeaser)
+  );
+  const [hookFlashText, setHookFlashText] = useState<string>(
+    () => currentTemplate?.introFlashHookText || '90% يخطئون في السؤال الأخير! ⚠️'
+  );
+  const [isApplyingHook, setIsApplyingHook] = useState(false);
 
   // Bank Vault & Consultation State
   const [bankFolders, setBankFolders] = useState<BankFolder[]>([]);
@@ -356,6 +418,101 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
             ? VERSUS_SUGGESTIONS
             : CATEGORY_SUGGESTIONS[selectedCategory] ?? CATEGORY_SUGGESTIONS.general;
 
+  const activeHookPreset = useMemo(
+    () => HOOK_TEMPLATES.find((h) => h.id === selectedHookId),
+    [selectedHookId]
+  );
+
+  const handleSelectHookPreset = (preset: HookTemplatePreset) => {
+    setHookEnabled(true);
+    setSelectedHookId(preset.id);
+    setHookText(preset.hookText);
+    setHookSfx(preset.sfxId);
+    setHookDuration(preset.duration);
+    setHookFlashTeaser(Boolean(preset.flashTeaser));
+    if (preset.flashText) {
+      setHookFlashText(preset.flashText);
+    }
+    soundEngine.previewBuiltInSfx(preset.sfxId, 0.72);
+  };
+
+  const buildHookTemplatePatch = async (
+    allowTts: boolean
+  ): Promise<{ patch: Partial<TemplateSettings>; ttsWarning?: string }> => {
+    const cleanText = hookText.trim();
+    if (!hookEnabled || !cleanText) {
+      return {
+        patch: {
+          showIntroHook: false,
+          introHookAudio: undefined,
+        },
+      };
+    }
+
+    let hookAudioClip: SlideAudioClip | undefined;
+    let ttsWarning: string | undefined;
+
+    if (allowTts && withVoice) {
+      try {
+        setStatusText('جارٍ توليد صوت مقدمة الهوك بالذكاء الاصطناعي...');
+        hookAudioClip = await generateSingleTtsClip(cleanText, voiceName, 'hook-voice.wav');
+      } catch (err) {
+        ttsWarning =
+          err instanceof Error
+            ? `تمت إضافة مقدمة الهوك بالمؤثر الصوتي (تعذر تعليق الهوك: ${err.message})`
+            : 'تمت إضافة مقدمة الهوك بالمؤثر الصوتي.';
+      }
+    }
+
+    return {
+      patch: {
+        showIntroHook: true,
+        introHookTemplateId: selectedHookId || 'custom',
+        introHookText: cleanText,
+        introHookDuration: hookDuration,
+        introHookSfx: hookSfx,
+        introHookBadge: activeHookPreset?.badge || 'تحدي سريع ⚡',
+        introHookAccentColor: activeHookPreset?.accentColor || '#f59e0b',
+        introFlashTeaser: hookFlashTeaser,
+        ...(hookFlashTeaser
+          ? {
+              introFlashHookText:
+                hookFlashText.trim() || activeHookPreset?.flashText || '90% يخطئون في السؤال الأخير! ⚠️',
+            }
+          : {}),
+        introHookAudio: hookAudioClip,
+      },
+      ttsWarning,
+    };
+  };
+
+  const handleApplyHookToCurrent = async () => {
+    if (!onApplyHookOnly || isApplyingHook || isGenerating) return;
+    setIsApplyingHook(true);
+    setErrorMsg('');
+    try {
+      soundEngine.getContext();
+    } catch {
+      // ignore
+    }
+    try {
+      const { patch, ttsWarning } = await buildHookTemplatePatch(withVoice);
+      onApplyHookOnly(patch);
+      if (patch.showIntroHook && hookSfx !== 'none') {
+        soundEngine.previewBuiltInSfx(hookSfx, 0.7);
+      }
+      setStatusText(
+        ttsWarning ||
+          (patch.showIntroHook
+            ? 'تم تطبيق قالب الهوك كشريحة مقدمة على الفيديو الحالي ✓'
+            : 'تم إيقاف شريحة المقدمة على الفيديو الحالي.')
+      );
+      window.setTimeout(() => setStatusText(''), 2600);
+    } finally {
+      setIsApplyingHook(false);
+    }
+  };
+
   const handleGenerate = async (insertMode: 'append' | 'replace') => {
     const trimmed = topic.trim() || selectedCategoryMeta.promptHint;
 
@@ -426,9 +583,18 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
           }
         }
 
-        onInsertSlides(resultSlides, insertMode, true, quotaWarning, themePreset);
+        const hookRes = await buildHookTemplatePatch(!quotaWarning);
+        onInsertSlides(
+          resultSlides,
+          insertMode,
+          true,
+          quotaWarning ?? hookRes.ttsWarning,
+          themePreset,
+          hookRes.patch
+        );
       } else {
-        onInsertSlides(slides, insertMode, false, undefined, themePreset);
+        const hookRes = await buildHookTemplatePatch(false);
+        onInsertSlides(slides, insertMode, false, undefined, themePreset, hookRes.patch);
       }
 
       setStatusText('');
@@ -625,7 +791,15 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
         : shouldApplyIslamic
           ? 'islamic'
           : false;
-      onInsertSlides([slide], insertMode, withVoice, warningMsg, themePreset);
+      const hookRes = await buildHookTemplatePatch(withVoice && !warningMsg);
+      onInsertSlides(
+        [slide],
+        insertMode,
+        withVoice || Boolean(hookRes.patch.showIntroHook),
+        warningMsg ?? hookRes.ttsWarning,
+        themePreset,
+        hookRes.patch
+      );
     } finally {
       setBankActionId(null);
     }
@@ -1312,6 +1486,174 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
           </div>
         </div>
       )}
+
+      {/* Hook Templates Card (Opening Intro Slide + Custom SFX) */}
+      <div className="flex flex-col gap-2.5 p-3.5 rounded-xl bg-[var(--surface)] border border-[var(--pline)]">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <Zap className="w-4 h-4 text-[var(--gold)] shrink-0" />
+            <div className="flex flex-col">
+              <span className="text-xs font-extrabold text-[var(--ptxt)]">
+                قوالب الهوك للمقدمة (Hook Templates)
+              </span>
+              <span className="text-[10px] text-[var(--pmuted)]">
+                شريحة مقدمة خاطفة في أول الفيديو مع مؤثر صوتي مخصص
+              </span>
+            </div>
+          </div>
+
+          <label className="flex items-center gap-1.5 cursor-pointer shrink-0">
+            <span className="text-[10px] font-bold text-[var(--pmuted)]">
+              {hookEnabled ? 'مفعّل' : 'معطّل'}
+            </span>
+            <input
+              type="checkbox"
+              checked={hookEnabled}
+              disabled={isGenerating || isApplyingHook}
+              onChange={(e) => setHookEnabled(e.target.checked)}
+              className="w-4 h-4 accent-[#00B050] rounded cursor-pointer"
+            />
+          </label>
+        </div>
+
+        {hookEnabled && (
+          <div className="flex flex-col gap-2.5 pt-2 border-t border-[var(--pline)]">
+            <div className="grid grid-cols-2 gap-1.5">
+              {HOOK_TEMPLATES.map((tpl) => {
+                const isSelected = selectedHookId === tpl.id;
+                return (
+                  <button
+                    key={tpl.id}
+                    type="button"
+                    disabled={isGenerating || isApplyingHook}
+                    onClick={() => handleSelectHookPreset(tpl)}
+                    className={`flex flex-col items-start gap-0.5 p-2 rounded-lg border text-right transition-colors cursor-pointer ${
+                      isSelected
+                        ? 'bg-[#00B050]/16 border-[#00B050] text-[var(--ptxt)]'
+                        : 'bg-[var(--panel)] border-[var(--pline)] hover:border-[var(--gold)] text-[var(--ptxt)]'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1 w-full">
+                      <span className="text-[11px] font-extrabold truncate">
+                        {tpl.emoji} {tpl.title}
+                      </span>
+                      {isSelected && <CheckCircle2 className="w-3.5 h-3.5 text-[#00B050] shrink-0" />}
+                    </div>
+                    <span className="text-[9px] text-[var(--pmuted)] truncate w-full">
+                      {tpl.sfxLabel} · {tpl.duration.toFixed(1)}ث
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center justify-between text-[10px] text-[var(--pmuted)]">
+                <span>نص جملة الهوك في بداية الفيديو</span>
+                <button
+                  type="button"
+                  disabled={isGenerating || isApplyingHook}
+                  onClick={() => setHookEnabled(false)}
+                  className="text-rose-400 hover:underline cursor-pointer"
+                >
+                  بدون مقدمة
+                </button>
+              </div>
+              <input
+                type="text"
+                value={hookText}
+                disabled={isGenerating || isApplyingHook}
+                onChange={(e) => {
+                  setHookText(e.target.value);
+                  setSelectedHookId('custom');
+                }}
+                placeholder="مثال: هل أنت ذكي بما يكفي؟ اختبر نفسك الآن!"
+                className="w-full px-3 py-2 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-xs text-[var(--ptxt)] focus:border-[#00B050] focus:outline-none"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className="flex flex-col gap-1">
+                <span className="text-[10px] text-[var(--pmuted)]">المؤثر الصوتي للهوك</span>
+                <div className="flex items-center gap-1">
+                  <select
+                    value={hookSfx}
+                    disabled={isGenerating || isApplyingHook}
+                    onChange={(e) => setHookSfx(e.target.value as BuiltInSfxId)}
+                    className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] text-[var(--ptxt)] focus:border-[#00B050] focus:outline-none"
+                  >
+                    {BUILTIN_SFX_OPTIONS.map((opt) => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={hookSfx === 'none'}
+                    onClick={() => soundEngine.previewBuiltInSfx(hookSfx, 0.78)}
+                    title="معاينة المؤثر الصوتي"
+                    className="flex items-center gap-1 px-2 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] hover:border-[#00B050] disabled:opacity-40 text-[10px] font-bold text-[#00B050] cursor-pointer shrink-0"
+                  >
+                    <Volume2 className="w-3.5 h-3.5" />
+                    <span>سماع</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <span className="text-[10px] text-[var(--pmuted)]">مدة شريحة المقدمة</span>
+                <div className="grid grid-cols-4 gap-1 p-0.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)]">
+                  {[1.4, 1.8, 2.2, 2.8].map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      disabled={isGenerating || isApplyingHook}
+                      onClick={() => setHookDuration(d)}
+                      className={`py-1 rounded-md text-[10px] font-mono-nums font-bold cursor-pointer ${
+                        Math.abs(hookDuration - d) < 0.08
+                          ? 'bg-[#00B050] text-white'
+                          : 'text-[var(--pmuted)] hover:text-[var(--ptxt)]'
+                      }`}
+                    >
+                      {d}ث
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <label className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] cursor-pointer">
+              <span className="text-[11px] font-semibold text-[var(--ptxt)]">
+                تفعيل ومضة التشويق الخاطفة بأول نصف ثانية ⚡
+              </span>
+              <input
+                type="checkbox"
+                checked={hookFlashTeaser}
+                disabled={isGenerating || isApplyingHook}
+                onChange={(e) => setHookFlashTeaser(e.target.checked)}
+                className="w-4 h-4 accent-[#00B050] rounded cursor-pointer"
+              />
+            </label>
+
+            {hasExistingSlides && onApplyHookOnly && (
+              <button
+                type="button"
+                disabled={isGenerating || isApplyingHook || !hookText.trim()}
+                onClick={() => void handleApplyHookToCurrent()}
+                className="flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg bg-[var(--panel)] border border-[#00B050]/45 hover:border-[#00B050] disabled:opacity-50 text-[11px] font-bold text-[#00B050] dark:text-[#6ee7b7] cursor-pointer"
+              >
+                {isApplyingHook ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Zap className="w-3.5 h-3.5" />
+                )}
+                <span>تطبيق الهوك على الفيديو الحالي الآن</span>
+              </button>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* AI Voiceover Settings (Shared for direct generation AND 1-click bank->video) */}
       <div className="flex flex-col gap-3 p-3.5 rounded-xl bg-[var(--surface)] border border-[var(--pline)]">

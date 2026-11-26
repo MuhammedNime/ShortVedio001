@@ -123,12 +123,13 @@ jobs:
             }
             fs.writeFileSync(manifestPath, m);
 
-            // 3. Patch app/build.gradle for universal ABI, explicit appId, versioning, and v1/v2/v3 signing
+            // 3. Patch app/build.gradle for universal ABI, explicit appId, monotonic versionCode, and v1/v2 signing
             const gradlePath = "android/app/build.gradle";
             let g = fs.readFileSync(gradlePath, "utf8");
+            const monotonicVersionCode = Math.floor(Date.now() / 60000);
             g = g.replace(/namespace\s*=?\s*"[^"]*"/, "namespace = \"com.quizpro.reelsstudio1\"");
             g = g.replace(/applicationId\s+"[^"]*"/, "applicationId \"com.quizpro.reelsstudio1\"");
-            g = g.replace(/versionCode\s+\d+/, "versionCode ${{ github.run_number }}");
+            g = g.replace(/versionCode\s+\d+/, `versionCode ${monotonicVersionCode}`);
             g = g.replace(/versionName\s+"[^"]*"/, "versionName \"1.0.${{ github.run_number }}\"");
 
             if (!g.includes("splits {")) {
@@ -139,7 +140,7 @@ jobs:
             }
 
             if (!g.includes("signingConfigs")) {
-              const signingBlock = `    signingConfigs {\n        release {\n            if (System.getenv("ANDROID_KEYSTORE_PATH")) {\n                storeFile file(System.getenv("ANDROID_KEYSTORE_PATH"))\n                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")\n                keyAlias System.getenv("ANDROID_KEY_ALIAS")\n                keyPassword System.getenv("ANDROID_KEY_PASSWORD")\n            }\n            enableV1Signing true\n            enableV2Signing true\n            enableV3Signing true\n        }\n    }\n    buildTypes {`;
+              const signingBlock = `    signingConfigs {\n        release {\n            if (System.getenv("ANDROID_KEYSTORE_PATH")) {\n                storeFile file(System.getenv("ANDROID_KEYSTORE_PATH"))\n                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")\n                keyAlias System.getenv("ANDROID_KEY_ALIAS")\n                keyPassword System.getenv("ANDROID_KEY_PASSWORD")\n            }\n            enableV1Signing true\n            enableV2Signing true\n            enableV3Signing false\n        }\n    }\n    buildTypes {`;
               g = g.replace("    buildTypes {", signingBlock);
               g = g.replace(
                 /buildTypes\s*\{\s*release\s*\{/,
@@ -190,7 +191,7 @@ jobs:
             resize_icon "public/pwa-maskable-512x512.png" "${FG_SIZES[$dir]}" "android/app/src/main/res/$dir/ic_launcher_foreground.png"
           done
 
-      - name: Build Android Debug & Signed Release APKs
+      - name: Build, align, sign & verify Android APKs
         working-directory: android
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 || '' }}
@@ -205,7 +206,7 @@ jobs:
             rm -f /tmp/release.keystore
             keytool -genkeypair -v \
               -keystore /tmp/release.keystore \
-              -storetype PKCS12 \
+              -storetype JKS \
               -alias quizpro_release \
               -keyalg RSA \
               -keysize 2048 \
@@ -220,17 +221,38 @@ jobs:
           fi
           chmod +x gradlew
           ./gradlew assembleDebug assembleRelease --no-daemon
-          rm -f /tmp/release.keystore
 
-      - name: Prepare APK release files
-        run: |
-          mkdir -p release-apks
-          cp android/app/build/outputs/apk/debug/app-debug.apk release-apks/quizpro-reels-debug.apk
-          if [ -f "android/app/build/outputs/apk/release/app-release.apk" ]; then
-            cp android/app/build/outputs/apk/release/app-release.apk release-apks/quizpro-reels-release.apk
-          elif [ -f "android/app/build/outputs/apk/release/app-release-unsigned.apk" ]; then
-            cp android/app/build/outputs/apk/release/app-release-unsigned.apk release-apks/quizpro-reels-release-unsigned.apk
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          BUILD_TOOLS_DIR="$(ls -d "$SDK_ROOT"/build-tools/* | sort -V | tail -n 1)"
+          ZIPALIGN="$BUILD_TOOLS_DIR/zipalign"
+          APKSIGNER="$BUILD_TOOLS_DIR/apksigner"
+          AAPT2="$BUILD_TOOLS_DIR/aapt2"
+
+          RAW_RELEASE="app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$RAW_RELEASE" ]; then
+            RAW_RELEASE="app/build/outputs/apk/release/app-release-unsigned.apk"
           fi
+
+          mkdir -p ../release-apks
+          "$ZIPALIGN" -p -f 4 "$RAW_RELEASE" ../release-apks/quizpro-reels-release-aligned.apk
+          "$APKSIGNER" sign \
+            --ks "$ANDROID_KEYSTORE_PATH" \
+            --ks-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --key-pass "pass:$ANDROID_KEY_PASSWORD" \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled false \
+            --out ../release-apks/quizpro-reels-release.apk \
+            ../release-apks/quizpro-reels-release-aligned.apk
+          rm -f ../release-apks/quizpro-reels-release-aligned.apk
+
+          cp app/build/outputs/apk/debug/app-debug.apk ../release-apks/quizpro-reels-debug.apk
+
+          "$APKSIGNER" verify --verbose --print-certs ../release-apks/quizpro-reels-release.apk
+          "$AAPT2" dump badging ../release-apks/quizpro-reels-release.apk | head -n 30
+
+          rm -f /tmp/release.keystore
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
@@ -256,9 +278,9 @@ jobs:
           tag_name: ${{ steps.release_meta.outputs.tag }}
           name: ${{ steps.release_meta.outputs.name }}
           body: |
-            تم بناء تطبيق **استوديو كويز برو (QuizPro Reels Studio)** تلقائياً (الإصدار `1.0.${{ github.run_number }}`):
-            - **`quizpro-reels-release.apk`**: نسخة Release موقّعة (v1/v2/v3) جاهزة للتثبيت المباشر على أندرويد.
-            - **`quizpro-reels-debug.apk`**: نسخة Debug للاختبار.
+            تم بناء وتوقيع تطبيق **استوديو كويز برو (QuizPro Reels Studio)** والتحقق منه بنجاح (الإصدار `1.0.${{ github.run_number }}`):
+            - **`quizpro-reels-release.apk`**: الحزمة الرسمية الموقّعة والمحاذاة (v1 + v2) للتثبيت المباشر على أندرويد.
+            - ملاحظة: إذا كان هناك تثبيت سابق من تجربة أقدم، احذف التطبيق القديم أولاً ثم ثبّت هذا الملف.
           make_latest: true
           files: |
-            release-apks/*.apk
+            release-apks/quizpro-reels-release.apk

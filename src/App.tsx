@@ -1108,22 +1108,48 @@ export default function App() {
                 vaultRefreshTrigger={vaultRefreshTrigger}
                 aiPresenterConfigured={aiPresenterConfigured}
                 hasAiPresenter={Boolean(project.template.aiPresenter?.enabled)}
+                hasExistingSlides={project.slides.length > 0}
+                currentTemplate={project.template}
                 onOpenAiPresenterStudio={() => setIsAiPresenterOpen(true)}
                 onOpenLargeVault={() => setIsVaultOpen(true)}
                 onVoiceChange={(voice) =>
                   updateProject((prev) => ({ ...prev, preferredAiVoice: voice }), true)
                 }
-                onInsertSlides={(newSlides, mode, enableAutoSync, warningMessage, themePreset) => {
+                onApplyHookOnly={(hookPatch) => {
+                  updateProject(
+                    (prev) => ({
+                      ...prev,
+                      template: {
+                        ...prev.template,
+                        ...hookPatch,
+                      },
+                    }),
+                    true
+                  );
+                  setActiveSlideIndex(0);
+                  setActiveTab('slides');
+                }}
+                onInsertSlides={(
+                  newSlides,
+                  mode,
+                  enableAutoSync,
+                  warningMessage,
+                  themePreset,
+                  hookTemplatePatch
+                ) => {
                   const targetIdx = mode === 'replace' ? 0 : project.slides.length;
                   updateProject((prev) => {
                     const updatedSlides =
                       mode === 'replace' ? newSlides : [...prev.slides, ...newSlides];
-                    const nextTemplate =
+                    const themedTemplate =
                       themePreset === true || themePreset === 'math'
                         ? applyChannelThemePreset(prev.template, 'channelMath')
                         : themePreset === 'islamic'
                           ? applyStudioThemePreset(prev.template, 'islamicAndalusian')
                           : prev.template;
+                    const nextTemplate = hookTemplatePatch
+                      ? { ...themedTemplate, ...hookTemplatePatch }
+                      : themedTemplate;
                     return {
                       ...prev,
                       slides: updatedSlides,

@@ -20,6 +20,11 @@ import {
 
 export const BUILTIN_SFX_OPTIONS: { id: BuiltInSfxId; label: string }[] = [
   { id: 'none', label: 'بدون صوت' },
+  { id: 'impactBoom', label: 'ضربة سينمائية عميقة (Impact Boom 💥)' },
+  { id: 'countdownAlarm', label: 'صفارة تحدي سريعة (Challenge Alarm 🚨)' },
+  { id: 'mysterySparkle', label: 'وميض غموض وتشويق (Mystery Sparkle ✨)' },
+  { id: 'arcadeLevelUp', label: 'انطلاقة ألعاب حماسية (Arcade Level Up 🎮)' },
+  { id: 'glitchSnap', label: 'صدمة رقمية سريعة (Glitch Snap ⚡)' },
   { id: 'softPop', label: 'فقاعة القناة (Pop)' },
   { id: 'whoosh', label: 'سحب هوائي (Whoosh)' },
   { id: 'click', label: 'نقرة احترافية (Click)' },
@@ -679,6 +684,17 @@ class SoundEngine {
     }
   }
 
+  public previewBuiltInSfx(id: BuiltInSfxId, volume = 0.78): void {
+    if (id === 'none') return;
+    try {
+      const ctx = this.getContext();
+      this.stopAllSfxAndVoice();
+      this.playBuiltInSfx(id, volume, ctx, ctx.destination, ctx.currentTime, false, 1.4, 1.4);
+    } catch {
+      // ignore audio unlock errors
+    }
+  }
+
   public playBuiltInSfx(
     id: BuiltInSfxId,
     volume: number,
@@ -898,6 +914,118 @@ class SoundEngine {
           osc.start(now);
           osc.stop(now + 0.48);
         });
+        break;
+      }
+
+      case 'impactBoom': {
+        const sub = ctx.createOscillator();
+        const subGain = ctx.createGain();
+        sub.type = 'sine';
+        sub.frequency.setValueAtTime(145, now);
+        sub.frequency.exponentialRampToValueAtTime(38, now + 0.44);
+        subGain.gain.setValueAtTime(0.001, now);
+        subGain.gain.linearRampToValueAtTime(volume * 0.62, now + 0.015);
+        subGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.52);
+        sub.connect(subGain);
+        subGain.connect(targetDest);
+        sub.start(now);
+        sub.stop(now + 0.54);
+
+        const bufLen = Math.floor(ctx.sampleRate * 0.14);
+        const noiseBuf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+        const data = noiseBuf.getChannelData(0);
+        for (let i = 0; i < bufLen; i++) {
+          data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufLen * 0.35));
+        }
+        const noise = ctx.createBufferSource();
+        noise.buffer = noiseBuf;
+        const lpf = ctx.createBiquadFilter();
+        lpf.type = 'lowpass';
+        lpf.frequency.setValueAtTime(1100, now);
+        lpf.frequency.exponentialRampToValueAtTime(180, now + 0.14);
+        const nGain = ctx.createGain();
+        nGain.gain.setValueAtTime(volume * 0.42, now);
+        nGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
+        noise.connect(lpf);
+        lpf.connect(nGain);
+        nGain.connect(targetDest);
+        noise.start(now);
+        noise.stop(now + 0.15);
+        break;
+      }
+
+      case 'countdownAlarm': {
+        [0, 0.14].forEach((offset, idx) => {
+          const t = now + offset;
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(idx === 0 ? 960 : 1320, t);
+          osc.frequency.exponentialRampToValueAtTime(idx === 0 ? 1120 : 1560, t + 0.09);
+          gain.gain.setValueAtTime(0.001, t);
+          gain.gain.linearRampToValueAtTime(volume * 0.34, t + 0.012);
+          gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+          osc.connect(gain);
+          gain.connect(targetDest);
+          osc.start(t);
+          osc.stop(t + 0.13);
+        });
+        break;
+      }
+
+      case 'mysterySparkle': {
+        const notes = [659.25, 880, 1174.66, 1567.98];
+        notes.forEach((freq, idx) => {
+          const t = now + idx * 0.065;
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(freq, t);
+          gain.gain.setValueAtTime(0.001, t);
+          gain.gain.linearRampToValueAtTime(volume * 0.24, t + 0.015);
+          gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.34);
+          osc.connect(gain);
+          gain.connect(targetDest);
+          osc.start(t);
+          osc.stop(t + 0.36);
+        });
+        break;
+      }
+
+      case 'arcadeLevelUp': {
+        const notes = [440, 554.37, 659.25, 880];
+        notes.forEach((freq, idx) => {
+          const t = now + idx * 0.065;
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = idx === notes.length - 1 ? 'triangle' : 'square';
+          osc.frequency.setValueAtTime(freq, t);
+          gain.gain.setValueAtTime(0.001, t);
+          gain.gain.linearRampToValueAtTime(volume * (idx === notes.length - 1 ? 0.32 : 0.18), t + 0.01);
+          gain.gain.exponentialRampToValueAtTime(0.0001, t + (idx === notes.length - 1 ? 0.28 : 0.11));
+          osc.connect(gain);
+          gain.connect(targetDest);
+          osc.start(t);
+          osc.stop(t + 0.3);
+        });
+        break;
+      }
+
+      case 'glitchSnap': {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(1750, now);
+        osc.frequency.exponentialRampToValueAtTime(240, now + 0.075);
+        osc.frequency.setValueAtTime(980, now + 0.08);
+        osc.frequency.exponentialRampToValueAtTime(320, now + 0.16);
+        gain.gain.setValueAtTime(0.001, now);
+        gain.gain.linearRampToValueAtTime(volume * 0.28, now + 0.008);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+        osc.connect(gain);
+        gain.connect(targetDest);
+        osc.start(now);
+        osc.stop(now + 0.2);
         break;
       }
     }

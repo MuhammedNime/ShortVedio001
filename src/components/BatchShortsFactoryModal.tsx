@@ -32,10 +32,17 @@ interface BatchShortsFactoryModalProps {
 }
 
 const ROTATE_THEMES: PresetId[] = [
+  'quizProSignature',
   'channelSand',
+  'auroraBorealis',
   'islamicAndalusian',
+  'tokyoDrift',
+  'luxuryMarble',
   'cosmicSpace',
   'stadiumArena',
+  'samuraiInk',
+  'goldenQuizShow',
+  'stealthCarbon',
   'millionaire',
   'neonCyber',
 ];
@@ -113,6 +120,7 @@ export const BatchShortsFactoryModal: React.FC<BatchShortsFactoryModalProps> = (
         showEndCard: true,
         showEndSubscribeCta: true,
         showProgressCounter: true,
+        showVideoProgressBar: true,
         showLiveScoreboard: enableScoreboard,
         presenterEnabled: enablePresenter,
         presenterStyle,
