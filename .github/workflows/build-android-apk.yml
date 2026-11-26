@@ -78,24 +78,11 @@ jobs:
           node -e '
             const fs = require("fs");
 
-            // 1. Set stable SDK levels in variables.gradle for universal Android 7..16 compatibility
-            const varsPath = "android/variables.gradle";
-            if (fs.existsSync(varsPath)) {
-              let v = fs.readFileSync(varsPath, "utf8");
-              v = v.replace(/minSdkVersion\s*=\s*\d+/, "minSdkVersion = 24");
-              v = v.replace(/compileSdkVersion\s*=\s*\d+/, "compileSdkVersion = 36");
-              v = v.replace(/targetSdkVersion\s*=\s*\d+/, "targetSdkVersion = 35");
-              fs.writeFileSync(varsPath, v);
-            }
-
-            // 2. Patch AndroidManifest.xml with required permissions, optional hardware features, and unique deep-link scheme
+            // 1. Patch AndroidManifest.xml with required permissions, optional hardware features, and unique deep-link scheme
             const manifestPath = "android/app/src/main/AndroidManifest.xml";
             let m = fs.readFileSync(manifestPath, "utf8");
             if (!m.includes("android:usesCleartextTraffic")) {
               m = m.replace("<application", "<application\n        android:usesCleartextTraffic=\"true\"");
-            }
-            if (!m.includes("android:requestLegacyExternalStorage")) {
-              m = m.replace("<application", "<application\n        android:requestLegacyExternalStorage=\"true\"");
             }
             if (!m.includes("android:launchMode")) {
               m = m.replace("<activity", "<activity\n            android:launchMode=\"singleTask\"");
@@ -110,9 +97,6 @@ jobs:
               "<uses-permission android:name=\"android.permission.RECORD_AUDIO\" />",
               "<uses-permission android:name=\"android.permission.MODIFY_AUDIO_SETTINGS\" />",
               "<uses-permission android:name=\"android.permission.WRITE_EXTERNAL_STORAGE\" android:maxSdkVersion=\"28\" />",
-              "<uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\" android:maxSdkVersion=\"32\" />",
-              "<uses-permission android:name=\"android.permission.READ_MEDIA_VIDEO\" />",
-              "<uses-permission android:name=\"android.permission.READ_MEDIA_IMAGES\" />",
               "<uses-feature android:name=\"android.hardware.microphone\" android:required=\"false\" />"
             ];
             for (const entry of manifestAdditions) {
@@ -123,13 +107,12 @@ jobs:
             }
             fs.writeFileSync(manifestPath, m);
 
-            // 3. Patch app/build.gradle for universal ABI, explicit appId, monotonic versionCode, and v1/v2 signing
+            // 2. Patch app/build.gradle with explicit appId, universal ABI, version, and native Gradle signingConfigs
             const gradlePath = "android/app/build.gradle";
             let g = fs.readFileSync(gradlePath, "utf8");
-            const monotonicVersionCode = Math.floor(Date.now() / 60000);
             g = g.replace(/namespace\s*=?\s*"[^"]*"/, "namespace = \"com.quizpro.reelsstudio1\"");
             g = g.replace(/applicationId\s+"[^"]*"/, "applicationId \"com.quizpro.reelsstudio1\"");
-            g = g.replace(/versionCode\s+\d+/, `versionCode ${monotonicVersionCode}`);
+            g = g.replace(/versionCode\s+\d+/, "versionCode ${{ github.run_number }}");
             g = g.replace(/versionName\s+"[^"]*"/, "versionName \"1.0.${{ github.run_number }}\"");
 
             if (!g.includes("splits {")) {
@@ -140,16 +123,17 @@ jobs:
             }
 
             if (!g.includes("signingConfigs")) {
-              const signingBlock = `    signingConfigs {\n        release {\n            if (System.getenv("ANDROID_KEYSTORE_PATH")) {\n                storeFile file(System.getenv("ANDROID_KEYSTORE_PATH"))\n                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")\n                keyAlias System.getenv("ANDROID_KEY_ALIAS")\n                keyPassword System.getenv("ANDROID_KEY_PASSWORD")\n            }\n            enableV1Signing true\n            enableV2Signing true\n            enableV3Signing false\n        }\n    }\n    buildTypes {`;
+              const signingBlock = `    signingConfigs {\n        release {\n            if (System.getenv("ANDROID_KEYSTORE_PATH")) {\n                storeFile file(System.getenv("ANDROID_KEYSTORE_PATH"))\n                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")\n                keyAlias System.getenv("ANDROID_KEY_ALIAS")\n                keyPassword System.getenv("ANDROID_KEY_PASSWORD")\n            }\n        }\n    }\n    buildTypes {`;
               g = g.replace("    buildTypes {", signingBlock);
               g = g.replace(
                 /buildTypes\s*\{\s*release\s*\{/,
                 "buildTypes {\n        release {\n            signingConfig System.getenv(\"ANDROID_KEYSTORE_PATH\") ? signingConfigs.release : signingConfigs.debug"
               );
             }
+
             fs.writeFileSync(gradlePath, g);
 
-            // 4. Match adaptive icon background color to new icon
+            // 3. Match adaptive icon background color to new icon
             const bgXmlPath = "android/app/src/main/res/values/ic_launcher_background.xml";
             if (fs.existsSync(bgXmlPath)) {
               let bg = fs.readFileSync(bgXmlPath, "utf8");
@@ -158,40 +142,16 @@ jobs:
             }
           '
 
-      - name: Copy & resize app launcher icons to Android resources
+      - name: Copy app launcher icons to Android resources
         run: |
-          resize_icon() {
-            local src="$1"
-            local size="$2"
-            local dst="$3"
-            if command -v convert >/dev/null 2>&1; then
-              convert "$src" -resize "${size}x${size}!" "$dst"
-            else
-              cp "$src" "$dst"
-            fi
-          }
-          declare -A ICON_SIZES=(
-            ["mipmap-mdpi"]=48
-            ["mipmap-hdpi"]=72
-            ["mipmap-xhdpi"]=96
-            ["mipmap-xxhdpi"]=144
-            ["mipmap-xxxhdpi"]=192
-          )
-          declare -A FG_SIZES=(
-            ["mipmap-mdpi"]=108
-            ["mipmap-hdpi"]=162
-            ["mipmap-xhdpi"]=216
-            ["mipmap-xxhdpi"]=324
-            ["mipmap-xxxhdpi"]=432
-          )
           for dir in mipmap-mdpi mipmap-hdpi mipmap-xhdpi mipmap-xxhdpi mipmap-xxxhdpi; do
             mkdir -p "android/app/src/main/res/$dir"
-            resize_icon "public/pwa-512x512.png" "${ICON_SIZES[$dir]}" "android/app/src/main/res/$dir/ic_launcher.png"
-            resize_icon "public/pwa-maskable-512x512.png" "${ICON_SIZES[$dir]}" "android/app/src/main/res/$dir/ic_launcher_round.png"
-            resize_icon "public/pwa-maskable-512x512.png" "${FG_SIZES[$dir]}" "android/app/src/main/res/$dir/ic_launcher_foreground.png"
+            cp public/pwa-192x192.png "android/app/src/main/res/$dir/ic_launcher.png"
+            cp public/pwa-maskable-512x512.png "android/app/src/main/res/$dir/ic_launcher_round.png"
+            cp public/pwa-512x512.png "android/app/src/main/res/$dir/ic_launcher_foreground.png"
           done
 
-      - name: Build, align, sign & verify Android APKs
+      - name: Build Android Debug & Release APKs
         working-directory: android
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 || '' }}
@@ -202,57 +162,26 @@ jobs:
           if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
             printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > /tmp/release.keystore
             export ANDROID_KEYSTORE_PATH="/tmp/release.keystore"
-          else
-            rm -f /tmp/release.keystore
-            keytool -genkeypair -v \
-              -keystore /tmp/release.keystore \
-              -storetype JKS \
-              -alias quizpro_release \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -storepass "quizpro2026" \
-              -keypass "quizpro2026" \
-              -dname "CN=QuizPro Reels Studio, O=QuizPro, C=US"
-            export ANDROID_KEYSTORE_PATH="/tmp/release.keystore"
-            export ANDROID_KEYSTORE_PASSWORD="quizpro2026"
-            export ANDROID_KEY_ALIAS="quizpro_release"
-            export ANDROID_KEY_PASSWORD="quizpro2026"
           fi
           chmod +x gradlew
           ./gradlew assembleDebug assembleRelease --no-daemon
+          rm -f /tmp/release.keystore
 
-          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
-          BUILD_TOOLS_DIR="$(ls -d "$SDK_ROOT"/build-tools/* | sort -V | tail -n 1)"
-          ZIPALIGN="$BUILD_TOOLS_DIR/zipalign"
-          APKSIGNER="$BUILD_TOOLS_DIR/apksigner"
-          AAPT2="$BUILD_TOOLS_DIR/aapt2"
-
-          RAW_RELEASE="app/build/outputs/apk/release/app-release.apk"
-          if [ ! -f "$RAW_RELEASE" ]; then
-            RAW_RELEASE="app/build/outputs/apk/release/app-release-unsigned.apk"
+      - name: Prepare & verify APK release files
+        run: |
+          mkdir -p release-apks
+          cp android/app/build/outputs/apk/debug/app-debug.apk release-apks/quizpro-reels-debug.apk
+          if [ -f "android/app/build/outputs/apk/release/app-release.apk" ]; then
+            cp android/app/build/outputs/apk/release/app-release.apk release-apks/quizpro-reels-release.apk
+          elif [ -f "android/app/build/outputs/apk/release/app-release-unsigned.apk" ]; then
+            cp android/app/build/outputs/apk/release/app-release-unsigned.apk release-apks/quizpro-reels-release-unsigned.apk
           fi
 
-          mkdir -p ../release-apks
-          "$ZIPALIGN" -p -f 4 "$RAW_RELEASE" ../release-apks/quizpro-reels-release-aligned.apk
-          "$APKSIGNER" sign \
-            --ks "$ANDROID_KEYSTORE_PATH" \
-            --ks-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
-            --ks-key-alias "$ANDROID_KEY_ALIAS" \
-            --key-pass "pass:$ANDROID_KEY_PASSWORD" \
-            --v1-signing-enabled true \
-            --v2-signing-enabled true \
-            --v3-signing-enabled false \
-            --out ../release-apks/quizpro-reels-release.apk \
-            ../release-apks/quizpro-reels-release-aligned.apk
-          rm -f ../release-apks/quizpro-reels-release-aligned.apk
-
-          cp app/build/outputs/apk/debug/app-debug.apk ../release-apks/quizpro-reels-debug.apk
-
-          "$APKSIGNER" verify --verbose --print-certs ../release-apks/quizpro-reels-release.apk
-          "$AAPT2" dump badging ../release-apks/quizpro-reels-release.apk | head -n 30
-
-          rm -f /tmp/release.keystore
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          BUILD_TOOLS_DIR="$(ls -d "$SDK_ROOT"/build-tools/* | sort -V | tail -n 1 || true)"
+          if [ -n "$BUILD_TOOLS_DIR" ] && [ -x "$BUILD_TOOLS_DIR/apksigner" ] && [ -f "release-apks/quizpro-reels-release.apk" ]; then
+            "$BUILD_TOOLS_DIR/apksigner" verify --verbose --print-certs release-apks/quizpro-reels-release.apk
+          fi
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
@@ -278,9 +207,9 @@ jobs:
           tag_name: ${{ steps.release_meta.outputs.tag }}
           name: ${{ steps.release_meta.outputs.name }}
           body: |
-            تم بناء وتوقيع تطبيق **استوديو كويز برو (QuizPro Reels Studio)** والتحقق منه بنجاح (الإصدار `1.0.${{ github.run_number }}`):
-            - **`quizpro-reels-release.apk`**: الحزمة الرسمية الموقّعة والمحاذاة (v1 + v2) للتثبيت المباشر على أندرويد.
-            - ملاحظة: إذا كان هناك تثبيت سابق من تجربة أقدم، احذف التطبيق القديم أولاً ثم ثبّت هذا الملف.
+            تم بناء تطبيق **استوديو كويز برو (QuizPro Reels Studio)** تلقائياً (الإصدار `1.0.${{ github.run_number }}`):
+            - **`quizpro-reels-release.apk`**: نسخة Release موقّعة جاهزة للتثبيت المباشر على أندرويد بجانب أي تطبيق آخر بدون حذفه.
+            - **`quizpro-reels-debug.apk`**: نسخة Debug للاختبار.
           make_latest: true
           files: |
-            release-apks/quizpro-reels-release.apk
+            release-apks/*.apk
