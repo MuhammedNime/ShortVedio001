@@ -1,4 +1,5 @@
 import { QuestionSlide, QuizCategory, SlideType } from '../types/quiz';
+import { computeQuestionSimilarity, normalizeArabicCanonical } from '../utils/arabicSimilarity';
 
 export interface BankFolder {
   id: string;
@@ -111,15 +112,7 @@ const STARTER_FOLDERS: BankFolder[] = [
 ];
 
 export function normalizeBankQuestionText(text: string): string {
-  return (text || '')
-    .replace(/[\u064B-\u065F\u0670]/g, '')
-    .replace(/[أإآ]/g, 'ا')
-    .replace(/ى/g, 'ي')
-    .replace(/ة/g, 'ه')
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
+  return normalizeArabicCanonical(text);
 }
 
 export function isNearDuplicateQuestionText(
@@ -130,19 +123,9 @@ export function isNearDuplicateQuestionText(
   if (!norm) return true;
   if (existingNormalized.has(norm)) return true;
 
-  const candWords = norm.split(' ').filter((w) => w.length > 2);
-  if (candWords.length < 3) return false;
-  const candSet = new Set(candWords);
-
   for (const prev of existingNormalized) {
-    const prevWords = prev.split(' ').filter((w) => w.length > 2);
-    if (prevWords.length < 3) continue;
-    let shared = 0;
-    for (const w of candSet) {
-      if (prevWords.includes(w)) shared += 1;
-    }
-    const ratio = shared / Math.max(candSet.size, prevWords.length);
-    if (ratio >= 0.74) return true;
+    const sim = computeQuestionSimilarity(norm, prev);
+    if (sim.score >= 0.68) return true;
   }
   return false;
 }

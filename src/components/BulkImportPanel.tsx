@@ -2,8 +2,10 @@ import React, { useRef, useState } from 'react';
 import { Archive, Download, FileUp, Layers, RotateCcw, Sparkles } from 'lucide-react';
 import { buildFullStudioBackup, restoreFullStudioBackup } from '../storage/backupVault';
 import { CHANNEL_SAMPLE_SLIDES, QuestionSlide, QuizProject } from '../types/quiz';
+import { DuplicateMatchItem, findDuplicateMatches } from '../utils/duplicateDetector';
 import { fileToImportText } from '../utils/fileImport';
 import { saveOrDownloadBlob } from '../utils/nativeDownload';
+import { DuplicateDecision, DuplicateWarningBanner } from './DuplicateWarningBanner';
 
 interface BulkImportPanelProps {
   project: QuizProject;
@@ -34,6 +36,12 @@ export const BulkImportPanel: React.FC<BulkImportPanelProps> = ({
   const [rawText, setRawText] = useState('');
   const [importFormat, setImportFormat] = useState<'auto' | 'multiple3'>('auto');
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [pendingImport, setPendingImport] = useState<{
+    slides: QuestionSlide[];
+    mode: 'replace' | 'append';
+    matches: DuplicateMatchItem[];
+  } | null>(null);
+  const [dupDecisions, setDupDecisions] = useState<Record<number, DuplicateDecision>>({});
   const projectFileRef = useRef<HTMLInputElement | null>(null);
   const questionsFileRef = useRef<HTMLInputElement | null>(null);
 
@@ -152,7 +160,25 @@ export const BulkImportPanel: React.FC<BulkImportPanelProps> = ({
     return parsed;
   };
 
-  const handleImport = (mode: 'replace' | 'append') => {
+  const finalizeImport = (slidesToUse: QuestionSlide[], mode: 'replace' | 'append') => {
+    if (slidesToUse.length === 0) {
+      setFeedback('تم استبعاد جميع الأسئلة المكررة ولم يتبقَّ أسئلة جديدة للإضافة.');
+      setPendingImport(null);
+      return;
+    }
+    if (mode === 'replace') {
+      onReplaceSlides(slidesToUse);
+      setFeedback(`تم استيراد ${slidesToUse.length} سؤال واستبدال القائمة الحالية.`);
+    } else {
+      onAppendSlides(slidesToUse);
+      setFeedback(`تمت إضافة ${slidesToUse.length} سؤال إلى القائمة الحالية.`);
+    }
+    setPendingImport(null);
+    setDupDecisions({});
+    setRawText('');
+  };
+
+  const handleImport = async (mode: 'replace' | 'append') => {
     const slides = parseBulkText(rawText);
     if (slides.length === 0) {
       setFeedback(
@@ -161,14 +187,30 @@ export const BulkImportPanel: React.FC<BulkImportPanelProps> = ({
       return;
     }
 
-    if (mode === 'replace') {
-      onReplaceSlides(slides);
-      setFeedback(`تم استيراد ${slides.length} سؤال واستبدال القائمة الحالية.`);
-    } else {
-      onAppendSlides(slides);
-      setFeedback(`تمت إضافة ${slides.length} سؤال إلى القائمة الحالية.`);
+    const matches = await findDuplicateMatches(slides, {
+      currentSlides: mode === 'append' ? project.slides : [],
+      includeBank: true,
+      includeSavedProjects: true,
+      excludeProjectId: project.id,
+    });
+
+    if (matches.length > 0) {
+      const initialDecisions: Record<number, DuplicateDecision> = {};
+      matches.forEach((m) => {
+        initialDecisions[m.candidateIndex] = 'pending';
+      });
+      setDupDecisions(initialDecisions);
+      setPendingImport({ slides, mode, matches });
+      return;
     }
-    setRawText('');
+
+    finalizeImport(slides, mode);
+  };
+
+  const handleApplyDuplicateReview = () => {
+    if (!pendingImport) return;
+    const filtered = pendingImport.slides.filter((_, idx) => dupDecisions[idx] !== 'skip');
+    finalizeImport(filtered, pendingImport.mode);
   };
 
   const handleLoadChannelSamples = () => {
@@ -318,10 +360,41 @@ export const BulkImportPanel: React.FC<BulkImportPanelProps> = ({
           </div>
         )}
 
+        {pendingImport && (
+          <DuplicateWarningBanner
+            matches={pendingImport.matches}
+            decisions={dupDecisions}
+            onDecisionChange={(idx, d) =>
+              setDupDecisions((prev) => ({ ...prev, [idx]: d }))
+            }
+            onAcceptAll={() => {
+              const all: Record<number, DuplicateDecision> = {};
+              pendingImport.matches.forEach((m) => {
+                all[m.candidateIndex] = 'keep';
+              });
+              setDupDecisions(all);
+            }}
+            onSkipAll={() => {
+              const all: Record<number, DuplicateDecision> = {};
+              pendingImport.matches.forEach((m) => {
+                all[m.candidateIndex] = 'skip';
+              });
+              setDupDecisions(all);
+            }}
+            onConfirmApply={handleApplyDuplicateReview}
+            onDismiss={() => setPendingImport(null)}
+            confirmLabel={
+              pendingImport.mode === 'replace'
+                ? 'استبدال القائمة بالأسئلة المعتمدة'
+                : 'إضافة الأسئلة المعتمدة للقائمة'
+            }
+          />
+        )}
+
         <div className="grid grid-cols-2 gap-2.5">
           <button
             type="button"
-            onClick={() => handleImport('append')}
+            onClick={() => void handleImport('append')}
             className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg bg-[#00B050] hover:bg-[#00c85b] text-white text-xs font-bold transition-colors cursor-pointer"
           >
             <Layers className="w-3.5 h-3.5" />
@@ -329,7 +402,7 @@ export const BulkImportPanel: React.FC<BulkImportPanelProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => handleImport('replace')}
+            onClick={() => void handleImport('replace')}
             className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg bg-[var(--surface)] hover:border-[var(--gold)] text-[var(--ptxt)] border border-[var(--pline)] text-xs font-semibold transition-colors cursor-pointer"
           >
             <span>استبدال الأسئلة</span>

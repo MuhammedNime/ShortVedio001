@@ -18,7 +18,9 @@ import {
   Redo2,
   RefreshCw,
   RotateCcw,
+  ShieldCheck,
   Shuffle,
+  SlidersHorizontal,
   Smartphone,
   Sparkles,
   Star,
@@ -38,6 +40,8 @@ import { BUILTIN_SFX_OPTIONS, soundEngine } from '../audio/soundEngine';
 import { AiVoiceName, generateSingleTtsClip } from '../services/aiClient';
 import {
   CustomTemplatePreset,
+  FULL_STUDIO_PACKAGES,
+  FullStudioPackagePreset,
   deleteCustomPresetAsync,
   getDefaultCustomStyleId,
   importCustomStyleFromJson,
@@ -57,19 +61,31 @@ import {
   loadBrandKitsAsync,
   saveBrandKitAsync,
 } from '../storage/brandKits';
-import { deleteAiMediaBlob, readFileAsDataUrl } from '../storage/projectStore';
+import {
+  applyBrandIdentityToLibraryProjectsBatch,
+  deleteAiMediaBlob,
+  readFileAsDataUrl,
+} from '../storage/projectStore';
 import { saveOrDownloadBlob } from '../utils/nativeDownload';
+import { triggerHaptic } from '../utils/haptics';
 import {
   AnimationStyle,
+  AudioSettings,
+  BackgroundFilterId,
   BackgroundMotion,
   BoxBorderStyle,
   BoxShapeStyle,
   BrandCornerPosition,
   BrandLogoAnimation,
   BuiltInSfxId,
+  ClawatarBgMode,
+  ClawatarCameraPreset,
+  ClawatarExpression,
   DEFAULT_PRIZE_LADDER,
   DEFAULT_TEMPLATE,
+  ExplanationCardStyle,
   HOOK_TEMPLATES,
+  OptionAppearEffect,
   OptionLabelStyle,
   OptionLayoutMode,
   OptionTextAlign,
@@ -103,14 +119,27 @@ import {
   TimingSettings,
   applyStudioThemePreset,
   applyThemeBackgroundOnly,
+  resetThemeToPresetOriginal,
 } from '../types/quiz';
 import { AiPresenterEditorControls } from './AiPresenterEditorControls';
 import { MicRecordButton } from './MicRecordButton';
+import { ThemesLibraryModal } from './ThemesLibraryModal';
+import {
+  CLAWATAR_CAMERA_PRESETS,
+  CLAWATAR_EXPRESSIONS,
+  CLAWATAR_MODELS,
+  CLAWATAR_STATE_PRESETS,
+  FEATURED_CLAWATAR_ANIMATIONS,
+  fetchVerifiedClawatarAnimations,
+  type ClawatarAnimationEntry,
+} from '../clawatar/catalog';
 
 interface TemplateDesignPanelProps {
   template: TemplateSettings;
   timing?: TimingSettings;
+  audio?: AudioSettings;
   slides?: QuestionSlide[];
+  activeProjectId?: string;
   aiVoiceName?: AiVoiceName;
   canUndo?: boolean;
   canRedo?: boolean;
@@ -118,6 +147,7 @@ interface TemplateDesignPanelProps {
   onRedo?: () => void;
   onChange: (next: TemplateSettings, immediate?: boolean) => void;
   onTimingChange?: (next: TimingSettings) => void;
+  onAudioChange?: (next: AudioSettings) => void;
   onOpenAiPresenterStudio?: () => void;
 }
 
@@ -151,6 +181,17 @@ const ONE_CLICK_STYLES: { id: PresetId; label: string; emoji: string; accent: st
 type ThemeFilterGroup = 'all' | 'new' | 'dark' | 'neon' | 'light';
 
 const NEW_PRO_THEME_IDS = new Set<PresetId>([
+  'darkCinematic',
+  'luxuryGold',
+  'scienceLab',
+  'natureEmerald',
+  'minimalClean',
+  'modernStudio',
+  'gamingArena',
+  'techBlue',
+  'bookArchive',
+  'mysteryVault',
+  'vintageClassic',
   'quizProSignature',
   'desertMirage',
   'matrixTerminal',
@@ -168,6 +209,8 @@ const NEW_PRO_THEME_IDS = new Set<PresetId>([
 ]);
 
 const LIGHT_THEME_IDS = new Set<PresetId>([
+  'minimalClean',
+  'bookArchive',
   'channelSand',
   'parchmentGold',
   'mintEditorial',
@@ -179,6 +222,9 @@ const LIGHT_THEME_IDS = new Set<PresetId>([
 
 const NEON_THEME_IDS = new Set<PresetId>([
   'neonCyber',
+  'gamingArena',
+  'techBlue',
+  'scienceLab',
   'matrixTerminal',
   'tokyoDrift',
   'auroraBorealis',
@@ -203,7 +249,9 @@ const VIRAL_HOOK_PRESETS = [
 export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
   template,
   timing,
+  audio,
   slides = [],
+  activeProjectId,
   aiVoiceName = 'Kore',
   canUndo = false,
   canRedo = false,
@@ -211,14 +259,21 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
   onRedo,
   onChange,
   onTimingChange,
+  onAudioChange,
   onOpenAiPresenterStudio,
 }) => {
+  const [isThemesLibraryOpen, setIsThemesLibraryOpen] = useState(false);
+  const stagePreviewSnapshotRef = useRef<TemplateSettings | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const logoInputRef = useRef<HTMLInputElement | null>(null);
   const hookAudioInputRef = useRef<HTMLInputElement | null>(null);
   const endAudioInputRef = useRef<HTMLInputElement | null>(null);
   const presenterPhotoInputRef = useRef<HTMLInputElement | null>(null);
+  const clawatarVrmInputRef = useRef<HTMLInputElement | null>(null);
   const styleJsonInputRef = useRef<HTMLInputElement | null>(null);
+  const [clawatarAnimations, setClawatarAnimations] = useState<ClawatarAnimationEntry[]>(
+    FEATURED_CLAWATAR_ANIMATIONS
+  );
   const [customPresets, setCustomPresets] = useState<CustomTemplatePreset[]>(() =>
     loadCustomPresets()
   );
@@ -228,7 +283,8 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
     getDefaultCustomStyleId()
   );
   const [includeMediaInSave, setIncludeMediaInSave] = useState(true);
-  const [includeTimingInSave, setIncludeTimingInSave] = useState(false);
+  const [includeTimingInSave, setIncludeTimingInSave] = useState(true);
+  const [includeAudioInSave, setIncludeAudioInSave] = useState(true);
   const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
   const [editingPresetName, setEditingPresetName] = useState('');
   const [styleError, setStyleError] = useState('');
@@ -293,6 +349,14 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
   };
 
   useEffect(() => {
+    if (template.presenterStyle === 'clawatar3d') {
+      void fetchVerifiedClawatarAnimations().then((list) => {
+        if (list.length > 0) setClawatarAnimations(list);
+      });
+    }
+  }, [template.presenterStyle]);
+
+  useEffect(() => {
     const reloadPresets = () => {
       void loadCustomPresetsAsync().then((loaded) => {
         setCustomPresets(loaded);
@@ -310,6 +374,9 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
       }
     };
   }, []);
+
+  const [batchBrandApplying, setBatchBrandApplying] = useState(false);
+  const [batchBrandIncludeFonts, setBatchBrandIncludeFonts] = useState(true);
 
   const showToast = (msg: string) => {
     setAppliedNotice(msg);
@@ -462,6 +529,7 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
   };
 
   const handleSelectPreset = (presetId: PresetId) => {
+    triggerHaptic('selection');
     if (themeApplyMode === 'bgOnly') {
       onChange(applyThemeBackgroundOnly(template, presetId), true);
       showToast('تم تغيير الخلفية مع حفظ تعديلاتك ✓');
@@ -472,11 +540,13 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
   };
 
   const handleApplyOneClickStyle = (presetId: PresetId) => {
+    triggerHaptic('selection');
     onChange(applyStudioThemePreset(template, presetId), true);
     showToast('تم تطبيق الستايل بالكامل ✓');
   };
 
   const handleShuffleRandomTheme = () => {
+    triggerHaptic('medium');
     const candidates = STUDIO_THEME_ORDER.filter((id) => id !== template.presetId);
     const picked = candidates[Math.floor(Math.random() * candidates.length)] || 'quizProSignature';
     onChange(applyStudioThemePreset(template, picked), true);
@@ -484,16 +554,45 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
     showToast(`تم تطبيق ثيم عشوائي: ${label} 🎲`);
   };
 
+  const triggerLiveStagePhasePreview = (
+    phase: 'options' | 'question' | 'timer' | 'reveal' | 'slide'
+  ) => {
+    triggerHaptic('light');
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('shortvedio:preview-jump-play', { detail: { phase } }));
+    }, 40);
+  };
+
+  const handleApplyFullStudioPackage = (pkg: FullStudioPackagePreset) => {
+    triggerHaptic('success');
+    const themed = applyStudioThemePreset(template, pkg.presetId);
+    const nextTemplate: TemplateSettings = {
+      ...themed,
+      ...pkg.templatePatch,
+    };
+    onChange(nextTemplate, true);
+    if (timing && onTimingChange) {
+      onTimingChange({ ...timing, ...pkg.timingPatch });
+    }
+    if (audio && onAudioChange) {
+      onAudioChange({ ...audio, ...pkg.audioPatch });
+    }
+    showToast(`تم تطبيق باقة «${pkg.name}» كاملة (ثيم + توقيت + مؤثرات) ✓`);
+  };
+
   const handleSaveCustomPreset = async () => {
     setStyleError('');
     const { list, created } = await saveCustomPresetAsync(presetNameInput, template, {
       includeBrandAndBg: includeMediaInSave,
       timing: includeTimingInSave ? timing : undefined,
+      audio: includeAudioInSave ? audio : undefined,
+      isFullStudioPreset: Boolean((includeTimingInSave && timing) || (includeAudioInSave && audio)),
     });
     setCustomPresets(list);
     setActiveCustomId(created.id);
     setPresetNameInput('');
-    showToast(`تم حفظ ستايل "${created.name}" ✓`);
+    triggerHaptic('success');
+    showToast(`تم حفظ "${created.name}" ✓`);
   };
 
   const handleUpdateSavedPreset = async (presetId: string) => {
@@ -502,13 +601,17 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
     const updatedList = await updateCustomPresetAsync(presetId, template, {
       includeBrandAndBg: includeMediaInSave,
       timing: includeTimingInSave ? timing : undefined,
+      audio: includeAudioInSave ? audio : undefined,
+      isFullStudioPreset: Boolean((includeTimingInSave && timing) || (includeAudioInSave && audio)),
     });
     setCustomPresets(updatedList);
     setActiveCustomId(presetId);
+    triggerHaptic('success');
     showToast(`تم تحديث "${target?.name || 'الستايل'}" بأحدث تعديلاتك ✓`);
   };
 
   const handleApplyCustomPreset = (preset: CustomTemplatePreset) => {
+    triggerHaptic('selection');
     const hasOwnBg = Boolean(preset.template.customBgDataUrl);
     const hasOwnLogo = Boolean(preset.template.brandLogoDataUrl);
     onChange(
@@ -529,8 +632,15 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
     if (preset.timing && onTimingChange) {
       onTimingChange({ ...preset.timing });
     }
+    if (preset.audio && onAudioChange) {
+      onAudioChange({ ...preset.audio });
+    }
     setActiveCustomId(preset.id);
-    showToast(`تم تطبيق "${preset.name}" ✓`);
+    showToast(
+      preset.isFullStudioPreset
+        ? `تم تطبيق باقة الاستوديو "${preset.name}" كاملة ✓`
+        : `تم تطبيق "${preset.name}" ✓`
+    );
   };
 
   const handleDeleteCustomPreset = async (id: string) => {
@@ -873,6 +983,21 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
         )}
         {isSectionOpen('styles') && (
           <div className="p-3.5 border-t border-[var(--pline)] flex flex-col gap-3">
+        <button
+          type="button"
+          onClick={() => {
+            stagePreviewSnapshotRef.current = { ...template };
+            setIsThemesLibraryOpen(true);
+          }}
+          className="flex items-center justify-between gap-2 w-full px-3.5 py-2.5 rounded-xl bg-[#00B050] hover:bg-[#00c85b] text-white text-xs font-extrabold transition-colors cursor-pointer"
+        >
+          <span className="flex items-center gap-2">
+            <Palette className="w-4 h-4" />
+            <span>فتح مكتبة الثيمات البصرية + منشئ الثيم المخصص</span>
+          </span>
+          <span className="text-[11px] opacity-90">{PRESET_BACKDROPS.length} ثيماً</span>
+        </button>
+
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 text-xs font-bold text-[var(--ptxt)]">
             <Sparkles className="w-3.5 h-3.5 text-[var(--gold)]" />
@@ -886,14 +1011,25 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
               className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-[var(--surface)] border border-[var(--pline)] hover:border-[var(--gold)] text-[var(--ptxt)] text-[11px] font-bold transition-colors cursor-pointer"
             >
               <Shuffle className="w-3 h-3 text-[var(--gold)]" />
-              <span>ثيم عشوائي</span>
+              <span>عشوائي</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onChange(resetThemeToPresetOriginal(template, true), true);
+                showToast('تمت إعادة الثيم الحالي لإعداداته الأصلية ✓');
+              }}
+              title="إعادة الثيم الحالي لألوانه وخطوطه الأصلية"
+              className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-[var(--surface)] border border-[var(--pline)] hover:border-[#00B050] text-[var(--ptxt)] text-[11px] font-bold transition-colors cursor-pointer"
+            >
+              <RotateCcw className="w-3 h-3 text-[#00B050]" />
+              <span>أصل الثيم</span>
             </button>
             <button
               type="button"
               onClick={applyChannelPreset}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#00B050] hover:bg-[#00c85b] text-white text-[11px] font-bold transition-colors cursor-pointer"
+              className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-[var(--surface)] border border-[var(--pline)] hover:border-[var(--gold)] text-[var(--ptxt)] text-[11px] font-bold transition-colors cursor-pointer"
             >
-              <RotateCcw className="w-3 h-3" />
               <span>الافتراضي</span>
             </button>
           </div>
@@ -1126,9 +1262,53 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
                     onChange={(e) => setIncludeTimingInSave(e.target.checked)}
                     className="w-3.5 h-3.5 accent-[#00B050] rounded"
                   />
-                  <span>حفظ أوقات المؤقت والمراحل أيضاً</span>
+                  <span>حفظ التوقيت</span>
                 </label>
               )}
+              {audio && (
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={includeAudioInSave}
+                    onChange={(e) => setIncludeAudioInSave(e.target.checked)}
+                    className="w-3.5 h-3.5 accent-[#00B050] rounded"
+                  />
+                  <span>حفظ المؤثرات الصوتية (باقة استوديو كاملة)</span>
+                </label>
+              )}
+            </div>
+          </div>
+
+          {/* Ready-made Full Studio Packages (Theme + Timing + SFX in 1 click) */}
+          <div className="flex flex-col gap-1.5 p-2.5 rounded-xl bg-[var(--panel)] border border-[var(--gold)]/35">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-extrabold text-[var(--gold)] flex items-center gap-1">
+                <Crown className="w-3.5 h-3.5" />
+                <span>باقات الاستوديو الكاملة (ثيم + حركات + توقيت + أصوات)</span>
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+              {FULL_STUDIO_PACKAGES.map((pkg) => (
+                <button
+                  key={pkg.id}
+                  type="button"
+                  onClick={() => handleApplyFullStudioPackage(pkg)}
+                  className="flex flex-col gap-0.5 p-2 rounded-lg bg-[var(--surface)] border border-[var(--pline)] hover:border-[var(--gold)] text-right transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[11px] font-extrabold text-[var(--ptxt)] truncate">
+                      {pkg.emoji} {pkg.name}
+                    </span>
+                    <span
+                      className="w-2.5 h-2.5 rounded-full shrink-0"
+                      style={{ backgroundColor: pkg.accentColor }}
+                    />
+                  </div>
+                  <span className="text-[9.5px] text-[var(--pmuted)] leading-snug line-clamp-2">
+                    {pkg.subtitle}
+                  </span>
+                </button>
+              ))}
             </div>
           </div>
 
@@ -1241,7 +1421,7 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
                             <span className="text-[10px] text-[var(--pmuted)] truncate">
                               {cp.template.aspectRatio || '9:16'}
                               {cp.template.boxStyle ? ` · ${cp.template.boxStyle}` : ''}
-                              {cp.timing ? ' · مع التوقيت' : ''}
+                              {cp.isFullStudioPreset ? ' · باقة كاملة' : cp.timing ? ' · مع التوقيت' : ''}
                             </span>
                           </div>
                         </button>
@@ -1412,6 +1592,31 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
         )}
         {isSectionOpen('backdrop') && (
           <div className="p-3.5 border-t border-[var(--pline)] flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              stagePreviewSnapshotRef.current = { ...template };
+              setIsThemesLibraryOpen(true);
+            }}
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-[#00B050]/15 border border-[#00B050] text-[#00B050] dark:text-[#6ee7b7] text-xs font-extrabold hover:bg-[#00B050]/22 transition-colors cursor-pointer"
+          >
+            <Palette className="w-4 h-4" />
+            <span>تصفح مكتبة الثيمات المصنفة + معاينة وتخصيص</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onChange(resetThemeToPresetOriginal(template, true), true);
+              showToast('تمت إعادة الثيم الحالي لإعداداته الأصلية ✓');
+            }}
+            title="إعادة الثيم لإعداداته الأصلية"
+            className="flex items-center gap-1 px-2.5 py-2 rounded-xl bg-[var(--surface)] border border-[var(--pline)] hover:border-[var(--gold)] text-xs font-bold cursor-pointer shrink-0"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>إعادة للأصل</span>
+          </button>
+        </div>
 
         {/* Persistent Mode Switch: Apply Backdrop Only vs Full Theme Override */}
         <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-[var(--surface)] border border-[var(--pline)]">
@@ -1630,6 +1835,92 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
             <option value="zoomAndParticles">زوم سينمائي + جزيئات ضوئية معاً</option>
           </select>
         </label>
+
+        {/* Background Cinematic Filters */}
+        <div className="p-3 rounded-xl bg-[var(--surface)] border border-[var(--pline)] flex flex-col gap-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-bold text-[var(--ptxt)] flex items-center gap-1.5">
+              <SlidersHorizontal className="w-3.5 h-3.5 text-[#00B050]" />
+              فلاتر الخلفية السينمائية
+            </span>
+            {(template.bgFilter || 'none') !== 'none' && (
+              <button
+                type="button"
+                onClick={() => patch({ bgFilter: 'none' })}
+                className="text-[10.5px] font-bold text-rose-400 hover:underline cursor-pointer"
+              >
+                إلغاء الفلتر
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-4 gap-1.5">
+            {(
+              [
+                { id: 'none', label: 'عادي' },
+                { id: 'grayscale', label: 'أبيض وأسود' },
+                { id: 'warm', label: 'دافئ' },
+                { id: 'sepia', label: 'سيبيا' },
+                { id: 'cool', label: 'بارد' },
+                { id: 'highContrast', label: 'تباين عالٍ' },
+                { id: 'vintage', label: 'Vintage' },
+              ] as Array<{ id: BackgroundFilterId; label: string }>
+            ).map((f) => {
+              const active = (template.bgFilter || 'none') === f.id;
+              return (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => patch({ bgFilter: f.id })}
+                  className={`px-2 py-1.5 rounded-lg border text-[11px] font-bold transition-colors cursor-pointer ${
+                    active
+                      ? 'bg-[#00B050]/18 border-[#00B050] text-[#00B050] dark:text-[#6ee7b7]'
+                      : 'bg-[var(--panel)] border-[var(--pline)] text-[var(--ptxt)] hover:border-[var(--gold)]'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {(template.bgFilter || 'none') !== 'none' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1 border-t border-[var(--pline)]">
+              <label className="flex flex-col gap-1">
+                <div className="flex justify-between text-[11px] text-[var(--ptxt)]">
+                  <span>شدة الفلتر</span>
+                  <span className="font-mono-nums font-bold text-[#00B050]">
+                    {Math.round((template.bgFilterIntensity ?? 0.65) * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0.1}
+                  max={1}
+                  step={0.05}
+                  value={template.bgFilterIntensity ?? 0.65}
+                  onChange={(e) =>
+                    patch({ bgFilterIntensity: parseFloat(e.target.value) }, false)
+                  }
+                />
+              </label>
+
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] text-[var(--ptxt)]">نطاق التطبيق</span>
+                <select
+                  value={template.bgFilterTarget || 'background'}
+                  onChange={(e) =>
+                    patch({ bgFilterTarget: e.target.value as 'background' | 'all' })
+                  }
+                  className="px-2 py-1 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] text-[var(--ptxt)]"
+                >
+                  <option value="background">الخلفية فقط (يحافظ على وضوح النص)</option>
+                  <option value="all">الخلفية + مسحة جوية عامة للمشهد</option>
+                </select>
+              </label>
+            </div>
+          )}
+        </div>
           </div>
         )}
       </section>
@@ -2349,7 +2640,10 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
             <span className="text-xs text-[var(--pmuted)]">حركة دخول الخيارات</span>
             <select
               value={template.optionAnim}
-              onChange={(e) => patch({ optionAnim: e.target.value as AnimationStyle })}
+              onChange={(e) => {
+                patch({ optionAnim: e.target.value as AnimationStyle });
+                triggerLiveStagePhasePreview('options');
+              }}
               className="px-3 py-2 rounded-lg bg-[var(--surface)] border border-[var(--pline)] text-xs text-[var(--ptxt)] focus:border-[#00B050] focus:outline-none"
             >
               {ANIM_OPTIONS.map((a) => (
@@ -2371,6 +2665,132 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
               <option value="ltr">من اليسار لليمين (أ يسار · ب يمين)</option>
             </select>
           </label>
+        </div>
+
+        {/* Option Appearance Excitement Visual Effect + Synced Sound + Instant Preview Replay */}
+        <div className="p-3 rounded-xl bg-[var(--surface)] border border-[var(--pline)] flex flex-col gap-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="flex items-center gap-1.5 text-xs font-bold text-[var(--ptxt)]">
+              <Sparkles className="w-3.5 h-3.5 text-[#00B050]" />
+              <span>تأثير بصري وصوتي متزامن عند ظهور كل خيار</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => triggerLiveStagePhasePreview('options')}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#00B050]/18 border border-[#00B050]/55 text-[#00B050] dark:text-[#6ee7b7] text-[10.5px] font-extrabold hover:bg-[#00B050]/28 cursor-pointer"
+            >
+              <Play className="w-3 h-3 fill-current" />
+              <span>معاينة حركة الخيارات الآن</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+            {(
+              [
+                { id: 'none', label: 'بدون تأثير إضافي' },
+                { id: 'shake', label: 'اهتزاز حماسي ⚡' },
+                { id: 'zoomPunch', label: 'تكبير وارتداد 🔍' },
+                { id: 'bouncePulse', label: 'نبض مطاطي 🏀' },
+                { id: 'glowFlash', label: 'وميض وتوهج ✨' },
+                { id: 'shakeAndZoom', label: 'اهتزاز + تكبير 🔥' },
+              ] as { id: OptionAppearEffect; label: string }[]
+            ).map((ef) => {
+              const active = (template.optionAppearEffect || 'none') === ef.id;
+              return (
+                <button
+                  key={ef.id}
+                  type="button"
+                  onClick={() => {
+                    triggerHaptic('selection');
+                    patch({ optionAppearEffect: ef.id });
+                    triggerLiveStagePhasePreview('options');
+                  }}
+                  className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-bold transition-colors cursor-pointer ${
+                    active
+                      ? 'bg-[#00B050]/18 border-[#00B050] text-[#00B050] dark:text-[#6ee7b7]'
+                      : 'bg-[var(--panel)] border-[var(--pline)] text-[var(--ptxt)] hover:border-[var(--gold)]'
+                  }`}
+                >
+                  {ef.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {(template.optionAppearEffect || 'none') !== 'none' && (
+            <label className="flex flex-col gap-1 pt-0.5">
+              <div className="flex justify-between text-[11px] text-[var(--ptxt)]">
+                <span>قوة وحدة التأثير عند الظهور</span>
+                <span className="font-mono-nums">
+                  {Math.round((template.optionAppearEffectIntensity ?? 1) * 100)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0.4}
+                max={1.5}
+                step={0.05}
+                value={template.optionAppearEffectIntensity ?? 1}
+                onChange={(e) =>
+                  patch({ optionAppearEffectIntensity: parseFloat(e.target.value) }, false)
+                }
+              />
+            </label>
+          )}
+
+          {/* Synced Option Appearance Sound Effect */}
+          <div className="pt-2 border-t border-[var(--pline)] flex flex-col gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-end">
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] font-bold text-[var(--ptxt)] flex items-center gap-1">
+                  <Volume2 className="w-3.5 h-3.5 text-[var(--gold)]" />
+                  <span>مؤثر صوتي متزامن مع ظهور كل خيار</span>
+                </span>
+                <select
+                  value={template.optionAppearSfx || 'none'}
+                  onChange={(e) => {
+                    const sfx = e.target.value as BuiltInSfxId;
+                    patch({ optionAppearSfx: sfx });
+                    if (sfx !== 'none') {
+                      soundEngine.unlock();
+                      soundEngine.previewBuiltInSfx(sfx, template.optionAppearSfxVolume ?? 0.45);
+                    }
+                  }}
+                  className="px-2.5 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] text-[var(--ptxt)] focus:border-[#00B050] focus:outline-none"
+                >
+                  {BUILTIN_SFX_OPTIONS.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {(template.optionAppearSfx || 'none') !== 'none' && (
+                <label className="flex flex-col gap-1">
+                  <div className="flex justify-between text-[10.5px] text-[var(--pmuted)]">
+                    <span>مستوى صوت المؤثر المتزامن</span>
+                    <span className="font-mono-nums font-bold text-[var(--ptxt)]">
+                      {Math.round((template.optionAppearSfxVolume ?? 0.45) * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={1}
+                    step={0.05}
+                    value={template.optionAppearSfxVolume ?? 0.45}
+                    onChange={(e) =>
+                      patch({ optionAppearSfxVolume: parseFloat(e.target.value) }, false)
+                    }
+                  />
+                </label>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
 
           <label className="flex flex-col gap-1">
             <div className="flex justify-between text-xs text-[var(--ptxt)]">
@@ -2667,6 +3087,7 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
             {(
               [
                 { id: 'aboveOptions', label: 'أعلى الخيارات (منسّق)' },
+                { id: 'aroundQuestion', label: 'يحيط بالسؤال (إطار متدرج)' },
                 { id: 'centerOfOptions', label: 'في منتصف الخيارات 🎯' },
                 { id: 'belowOptions', label: 'أسفل الخيارات' },
                 { id: 'free', label: 'تحكم حر كامل (X / Y)' },
@@ -2940,13 +3361,78 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
           <input
             type="checkbox"
             checked={Boolean(template.revealConfetti)}
-            onChange={(e) => patch({ revealConfetti: e.target.checked })}
+            onChange={(e) => {
+              patch({ revealConfetti: e.target.checked });
+              if (e.target.checked) triggerLiveStagePhasePreview('reveal');
+            }}
             className="w-4 h-4 accent-[#00B050] rounded cursor-pointer"
           />
           <span className="text-xs text-[var(--ptxt)]">
             إطلاق قصاصات احتفالية عند كشف الإجابة الصحيحة 🎉
           </span>
         </label>
+
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={Boolean(template.revealShockwave)}
+            onChange={(e) => {
+              patch({ revealShockwave: e.target.checked });
+              if (e.target.checked) triggerLiveStagePhasePreview('reveal');
+            }}
+            className="w-4 h-4 accent-[#00B050] rounded cursor-pointer"
+          />
+          <span className="text-xs text-[var(--ptxt)]">
+            موجة صدمة ضوئية متسعة حول الجواب الصحيح عند الكشف 💫
+          </span>
+        </label>
+
+        <div className="p-2.5 rounded-xl bg-[var(--surface)] border border-[var(--pline)] flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-bold text-[var(--ptxt)]">
+              تشويق الثواني الأخيرة (العد التنازلي الحماسي)
+            </span>
+            <button
+              type="button"
+              onClick={() => triggerLiveStagePhasePreview('timer')}
+              className="flex items-center gap-1 px-2 py-0.5 rounded bg-rose-500/15 border border-rose-500/40 text-rose-300 text-[10px] font-bold cursor-pointer"
+            >
+              <Play className="w-2.5 h-2.5 fill-current" />
+              <span>معاينة العداد</span>
+            </button>
+          </div>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={Boolean(template.timerUrgentRushBanner)}
+              onChange={(e) => patch({ timerUrgentRushBanner: e.target.checked })}
+              className="w-3.5 h-3.5 accent-rose-500 rounded cursor-pointer"
+            />
+            <span className="text-[11px] text-[var(--ptxt)]">
+              إظهار شارة «الوقت ينفد! 🔥» النابضة في الثواني الأخيرة
+            </span>
+          </label>
+          {template.timerUrgentRushBanner && (
+            <input
+              type="text"
+              value={template.timerUrgentRushText ?? 'الوقت ينفد! 🔥'}
+              onChange={(e) => patch({ timerUrgentRushText: e.target.value }, false)}
+              placeholder="الوقت ينفد! 🔥"
+              className="px-2.5 py-1 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] text-[var(--ptxt)]"
+            />
+          )}
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={Boolean(template.timerUrgentDoubleBeat)}
+              onChange={(e) => patch({ timerUrgentDoubleBeat: e.target.checked })}
+              className="w-3.5 h-3.5 accent-rose-500 rounded cursor-pointer"
+            />
+            <span className="text-[11px] text-[var(--ptxt)]">
+              مضاعفة نبضات تكتكة العداد (كل نصف ثانية) في الثواني الحرجة ⚡
+            </span>
+          </label>
+        </div>
 
         <label className="flex items-center gap-2 cursor-pointer">
           <input
@@ -3005,7 +3491,7 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
               </div>
               <label className="flex flex-col gap-1">
                 <div className="flex justify-between text-[11px] text-[var(--ptxt)]">
-                  <span>إزاحة صندوق التوضيح عمودياً</span>
+                  <span>إزاحة بطاقة الدليل والمعلومة عمودياً</span>
                   <span className="font-mono-nums">{template.explanationOffsetY ?? 0}px</span>
                 </div>
                 <input
@@ -3019,6 +3505,83 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
                   }
                 />
               </label>
+
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] text-[var(--pmuted)]">شكل بطاقة الدليل</span>
+                  <select
+                    value={template.explanationStyle || 'card'}
+                    onChange={(e) =>
+                      patch({ explanationStyle: e.target.value as ExplanationCardStyle })
+                    }
+                    className="px-2 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] text-[var(--ptxt)]"
+                  >
+                    <option value="card">بطاقة مؤطرة كاملة</option>
+                    <option value="pill">شريط كبسولة أنيق</option>
+                    <option value="minimal">شفاف بسيط (Minimal)</option>
+                  </select>
+                </label>
+
+                <label className="flex flex-col gap-1">
+                  <span className="text-[11px] text-[var(--pmuted)]">خط بطاقة الدليل</span>
+                  <select
+                    value={template.explanationFontFamily || ''}
+                    onChange={(e) =>
+                      patch({
+                        explanationFontFamily: (e.target.value || undefined) as
+                          | TemplateSettings['fontFamily']
+                          | undefined,
+                      })
+                    }
+                    className="px-2 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] text-[var(--ptxt)]"
+                  >
+                    <option value="">نفس خط المشروع</option>
+                    <option value="Cairo">Cairo</option>
+                    <option value="Tajawal">Tajawal</option>
+                    <option value="Amiri">Amiri</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <label className="flex flex-col gap-1">
+                  <div className="flex justify-between text-[11px] text-[var(--ptxt)]">
+                    <span>حجم خط المعلومة</span>
+                    <span className="font-mono-nums">{template.explanationFontSize ?? 30}px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={20}
+                    max={42}
+                    step={1}
+                    value={template.explanationFontSize ?? 30}
+                    onChange={(e) =>
+                      patch({ explanationFontSize: parseInt(e.target.value, 10) }, false)
+                    }
+                  />
+                </label>
+
+                <label className="flex flex-col gap-1">
+                  <div className="flex justify-between text-[11px] text-[var(--ptxt)]">
+                    <span>مدة ظهور البطاقة</span>
+                    <span className="font-mono-nums">
+                      {(template.explanationDuration ?? 0) === 0
+                        ? 'طوال الكشف'
+                        : `${template.explanationDuration} ث`}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={10}
+                    step={0.5}
+                    value={template.explanationDuration ?? 0}
+                    onChange={(e) =>
+                      patch({ explanationDuration: parseFloat(e.target.value) }, false)
+                    }
+                  />
+                </label>
+              </div>
             </div>
           )}
         </div>
@@ -3674,17 +4237,141 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
           </label>
         </div>
 
-        <label className="flex flex-col gap-1">
-          <span className="text-xs text-[var(--pmuted)]">معرف أو اسم القناة أسفل الشعار (اختياري)</span>
-          <input
-            type="text"
-            value={template.brandHandleText || ''}
-            onChange={(e) => patch({ brandHandleText: e.target.value })}
-            placeholder="@اسم_قناتك"
-            dir="ltr"
-            className="w-full px-3 py-2 rounded-lg bg-[var(--surface)] border border-[var(--pline)] focus:border-[#00B050] focus:outline-none text-xs text-[var(--ptxt)] text-right placeholder:text-[var(--pmuted)]"
-          />
-        </label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <label className="flex flex-col gap-1">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-[var(--pmuted)]">اسم القناة على الشاشة</span>
+              <label className="flex items-center gap-1 cursor-pointer text-[10.5px] text-[var(--ptxt)]">
+                <input
+                  type="checkbox"
+                  checked={template.showChannelName !== false}
+                  onChange={(e) => patch({ showChannelName: e.target.checked })}
+                  className="w-3 h-3 accent-[#00B050]"
+                />
+                <span>إظهار</span>
+              </label>
+            </div>
+            <input
+              type="text"
+              value={template.brandChannelName || ''}
+              onChange={(e) => patch({ brandChannelName: e.target.value })}
+              placeholder="مثال: قناة التحدي الذكي"
+              className="w-full px-3 py-2 rounded-lg bg-[var(--surface)] border border-[var(--pline)] focus:border-[#00B050] focus:outline-none text-xs text-[var(--ptxt)] placeholder:text-[var(--pmuted)]"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-[var(--pmuted)]">معرف القناة (@Handle)</span>
+            <input
+              type="text"
+              value={template.brandHandleText || ''}
+              onChange={(e) => patch({ brandHandleText: e.target.value })}
+              placeholder="@اسم_قناتك"
+              dir="ltr"
+              className="w-full px-3 py-2 rounded-lg bg-[var(--surface)] border border-[var(--pline)] focus:border-[#00B050] focus:outline-none text-xs text-[var(--ptxt)] text-right placeholder:text-[var(--pmuted)]"
+            />
+          </label>
+        </div>
+
+        <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-[var(--surface)] border border-[var(--pline)]">
+          <div className="flex items-center gap-2">
+            <input
+              type="color"
+              value={template.brandAccentColor || '#EDD6A2'}
+              onChange={(e) => patch({ brandAccentColor: e.target.value })}
+              className="w-7 h-7 rounded cursor-pointer border border-[var(--pline)]"
+            />
+            <div className="text-xs">
+              <div className="font-bold text-[var(--ptxt)]">لون تمييز هوية القناة</div>
+              <div className="text-[10.5px] text-[var(--pmuted)]">يطبق على إطار الشعار والمعرف</div>
+            </div>
+          </div>
+          <label className="flex items-center gap-1.5 cursor-pointer px-2.5 py-1.5 rounded-lg bg-amber-500/12 border border-amber-500/35 text-[11px] font-bold text-amber-300">
+            <input
+              type="checkbox"
+              checked={Boolean(template.showSafeGuides)}
+              onChange={(e) => patch({ showSafeGuides: e.target.checked })}
+              className="w-3.5 h-3.5 accent-amber-500"
+            />
+            <ShieldCheck className="w-3.5 h-3.5" />
+            <span>منطقة الأمان YouTube</span>
+          </label>
+        </div>
+
+        {/* Batch Apply Channel Brand Identity Across Episodes */}
+        <div className="p-3 rounded-xl bg-emerald-950/25 border border-[#00B050]/35 flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <div className="text-xs font-bold text-[#6ee7b7]">
+                تطبيق هوية القناة على جميع الفيديوهات دفعة واحدة
+              </div>
+              <div className="text-[10.5px] text-[var(--pmuted)]">
+                ينسخ الشعار والاسم والمعرف والموضع والحجم والألوان لجميع الحلقات تلقائياً
+              </div>
+            </div>
+          </div>
+
+          <label className="flex items-center gap-2 cursor-pointer text-[11px] text-[var(--ptxt)]">
+            <input
+              type="checkbox"
+              checked={batchBrandIncludeFonts}
+              onChange={(e) => setBatchBrandIncludeFonts(e.target.checked)}
+              className="w-3.5 h-3.5 accent-[#00B050]"
+            />
+            <span>توحيد خط القالب مع هوية القناة أيضاً</span>
+          </label>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button
+              type="button"
+              disabled={batchBrandApplying}
+              onClick={async () => {
+                setBatchBrandApplying(true);
+                try {
+                  const res = await applyBrandIdentityToLibraryProjectsBatch(
+                    template,
+                    'factoryOnly',
+                    { activeProjectId, includeFonts: batchBrandIncludeFonts }
+                  );
+                  showToast(
+                    res.updatedCount > 0
+                      ? `تم تحديث هوية القناة على ${res.updatedCount} حلقة في مصنع الشورتس ✓`
+                      : 'لا توجد حلقات محفوظة في مصنع الشورتس بعد'
+                  );
+                } finally {
+                  setBatchBrandApplying(false);
+                }
+              }}
+              className="px-3 py-2 rounded-lg bg-[#00B050] hover:bg-[#009644] disabled:opacity-50 text-white text-[11px] font-bold transition-colors cursor-pointer"
+            >
+              {batchBrandApplying ? 'جارٍ التطبيق...' : 'تطبيق على كل حلقات مصنع الشورتس'}
+            </button>
+
+            <button
+              type="button"
+              disabled={batchBrandApplying}
+              onClick={async () => {
+                setBatchBrandApplying(true);
+                try {
+                  const res = await applyBrandIdentityToLibraryProjectsBatch(
+                    template,
+                    'allProjects',
+                    {
+                      activeProjectId,
+                      includeFonts: batchBrandIncludeFonts,
+                    }
+                  );
+                  showToast(`تم توحيد الهوية على ${res.updatedCount} مشروع في المكتبة ✓`);
+                } finally {
+                  setBatchBrandApplying(false);
+                }
+              }}
+              className="px-3 py-2 rounded-lg bg-[var(--panel)] hover:border-[#00B050] border border-[var(--pline)] text-[var(--ptxt)] text-[11px] font-bold transition-colors cursor-pointer"
+            >
+              تطبيق على كل المشاريع المحفوظة
+            </button>
+          </div>
+        </div>
 
         <label className="flex items-center gap-2 cursor-pointer pt-1">
           <input
@@ -3752,15 +4439,17 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
           template.aiPresenter?.enabled
             ? 'راوي بشري حقيقي (AI)'
             : template.presenterEnabled
-              ? (template.presenterStyle || 'stylized3d') === 'stylized3d'
-                ? template.presenterGender === 'female'
-                  ? 'مذيعة ذكية متحركة'
-                  : 'مذيع ذكي متحرك'
-                : template.presenterStyle === 'photoFemale'
-                  ? 'صورة مذيعة'
-                  : template.presenterStyle === 'customPhoto'
-                    ? 'صورة مخصصة'
-                    : 'صورة مذيع'
+              ? (template.presenterStyle || 'stylized3d') === 'clawatar3d'
+                ? 'شخصية Clawatar 3D'
+                : (template.presenterStyle || 'stylized3d') === 'stylized3d'
+                  ? template.presenterGender === 'female'
+                    ? 'مذيعة ذكية متحركة'
+                    : 'مذيع ذكي متحرك'
+                  : template.presenterStyle === 'photoFemale'
+                    ? 'صورة مذيعة'
+                    : template.presenterStyle === 'customPhoto'
+                      ? 'صورة مخصصة'
+                      : 'صورة مذيع'
               : 'معطل',
           UserCheck
         )}
@@ -3869,6 +4558,12 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
             <div className="grid grid-cols-2 gap-2">
               {[
                 {
+                  id: 'clawatar3d' as PresenterStyle,
+                  title: 'شخصية Clawatar 3D 🌸',
+                  sub: '22 شخصية VRM + 132 حركة + مزامنة شفاه واقعية',
+                  thumb: '',
+                },
+                {
                   id: 'stylized3d' as PresenterStyle,
                   title: 'مذيع ذكي متحرك (١٠ حركات) 🎭',
                   sub: 'شفاه متزامنة + ذراعان + تفكير + خيارات + احتفال',
@@ -3912,6 +4607,8 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
                       });
                     }}
                     className={`flex items-center gap-2.5 p-2 rounded-xl border text-right transition-colors cursor-pointer ${
+                      ch.id === 'clawatar3d' ? 'col-span-2' : ''
+                    } ${
                       active && template.presenterEnabled
                         ? 'bg-[#00B050]/16 border-[#00B050] text-[var(--ptxt)]'
                         : 'bg-[var(--surface)] border-[var(--pline)] text-[var(--ptxt)] hover:border-[var(--gold)]'
@@ -3924,8 +4621,16 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
                         className="w-11 h-11 rounded-lg object-cover border border-[var(--pline)] shrink-0"
                       />
                     ) : (
-                      <div className="w-11 h-11 rounded-lg bg-[#00B050]/15 border border-[#00B050]/35 flex items-center justify-center shrink-0 text-[#00B050]">
-                        {ch.id === 'stylized3d' ? (
+                      <div
+                        className={`w-11 h-11 rounded-lg border flex items-center justify-center shrink-0 ${
+                          ch.id === 'clawatar3d'
+                            ? 'bg-pink-500/15 border-pink-400/45 text-pink-400 text-lg'
+                            : 'bg-[#00B050]/15 border-[#00B050]/35 text-[#00B050]'
+                        }`}
+                      >
+                        {ch.id === 'clawatar3d' ? (
+                          '🌸'
+                        ) : ch.id === 'stylized3d' ? (
                           <Sparkles className="w-5 h-5" />
                         ) : (
                           <ImagePlus className="w-5 h-5" />
@@ -3940,6 +4645,297 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
                 );
               })}
             </div>
+
+            {template.presenterStyle === 'clawatar3d' && (
+              <div className="p-3 rounded-xl bg-gradient-to-l from-pink-500/12 via-[var(--surface)] to-[#00B050]/10 border border-pink-400/40 flex flex-col gap-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-extrabold text-[var(--ptxt)]">
+                      إعدادات شخصية Clawatar 3D وحركاتها
+                    </div>
+                    <div className="text-[10px] text-[var(--pmuted)]">
+                      مدمجة مباشرة داخل الاستوديو: تدعم الشفافية، الخلفية البيضاء، ومزامنة الصوت
+                    </div>
+                  </div>
+                </div>
+
+                <input
+                  ref={clawatarVrmInputRef}
+                  type="file"
+                  accept=".vrm"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+                      if (dataUrl) {
+                        patch({
+                          presenterEnabled: true,
+                          presenterStyle: 'clawatar3d',
+                          clawatarModelId: 'custom',
+                          clawatarCustomModelUrl: dataUrl,
+                          clawatarCustomModelName: file.name,
+                        });
+                      }
+                    };
+                    reader.readAsDataURL(file);
+                    e.target.value = '';
+                  }}
+                />
+
+                <div className="flex items-center gap-2">
+                  <select
+                    value={template.clawatarModelId || 'base_female.vrm'}
+                    onChange={(e) =>
+                      patch({
+                        presenterEnabled: true,
+                        presenterStyle: 'clawatar3d',
+                        clawatarModelId: e.target.value,
+                      })
+                    }
+                    className="flex-1 min-w-0 px-2.5 py-2 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-xs font-bold text-[var(--ptxt)]"
+                  >
+                    {template.clawatarCustomModelUrl && (
+                      <option value="custom">
+                        🧬 شخصية مخصصة: {template.clawatarCustomModelName || 'Custom.vrm'}
+                      </option>
+                    )}
+                    {CLAWATAR_MODELS.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.emoji} {m.nameAr} ({m.sizeMB}MB)
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => clawatarVrmInputRef.current?.click()}
+                    className="shrink-0 flex items-center gap-1 px-2.5 py-2 rounded-lg bg-[var(--panel)] border border-[var(--pline)] hover:border-pink-400 text-[11px] font-bold cursor-pointer"
+                  >
+                    <Upload className="w-3.5 h-3.5 text-pink-400" />
+                    <span>.vrm</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[11px] text-[var(--pmuted)]">زاوية الكاميرا</span>
+                    <select
+                      value={template.clawatarCameraPreset || 'upperBody'}
+                      onChange={(e) =>
+                        patch({
+                          clawatarCameraPreset: e.target.value as ClawatarCameraPreset,
+                        })
+                      }
+                      className="px-2 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] font-bold"
+                    >
+                      {CLAWATAR_CAMERA_PRESETS.map((cp) => (
+                        <option key={cp.id} value={cp.id}>
+                          {cp.labelAr}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[11px] text-[var(--pmuted)]">تعبير الوجه</span>
+                    <select
+                      value={template.clawatarExpression || 'auto'}
+                      onChange={(e) =>
+                        patch({
+                          clawatarExpression: e.target.value as ClawatarExpression,
+                        })
+                      }
+                      className="px-2 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] font-bold"
+                    >
+                      <option value="auto">🤖 تلقائي حسب المرحلة</option>
+                      {CLAWATAR_EXPRESSIONS.map((exp) => (
+                        <option key={exp.id} value={exp.id}>
+                          {exp.emoji} {exp.labelAr}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[11px] text-[var(--pmuted)]">خلفية Clawatar</span>
+                    <select
+                      value={template.clawatarBgMode || 'transparent'}
+                      onChange={(e) =>
+                        patch({ clawatarBgMode: e.target.value as ClawatarBgMode })
+                      }
+                      className="px-2 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] font-bold"
+                    >
+                      <option value="transparent">بدون خلفية (شفاف تماماً)</option>
+                      <option value="white">خلفية بيضاء نقية</option>
+                      <option value="studio">استوديو احترافي</option>
+                      <option value="sakura">ساكورا 🌸</option>
+                      <option value="cyber">سايبر أزرق ⚡</option>
+                    </select>
+                  </label>
+
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[11px] text-[var(--pmuted)]">الحركة العامة</span>
+                    <select
+                      value={template.clawatarDefaultAction || 'auto'}
+                      onChange={(e) =>
+                        patch({ clawatarDefaultAction: e.target.value })
+                      }
+                      className="px-2 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] font-bold"
+                    >
+                      <option value="auto">✨ ذكي تلقائي (يتغير مع السؤال)</option>
+                      {clawatarAnimations.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.labelAr || a.id} ({a.id})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-[11px]">
+                  <label className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[var(--pmuted)]">
+                      <span>تقريب الشخصية</span>
+                      <span className="font-mono">
+                        {(template.clawatarScaleZoom ?? 1).toFixed(2)}x
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.7}
+                      max={1.55}
+                      step={0.05}
+                      value={template.clawatarScaleZoom ?? 1}
+                      onChange={(e) =>
+                        patch({ clawatarScaleZoom: Number(e.target.value) })
+                      }
+                      className="accent-pink-500"
+                    />
+                  </label>
+
+                  <label className="flex flex-col gap-1">
+                    <div className="flex justify-between text-[var(--pmuted)]">
+                      <span>زاوية الالتفاف</span>
+                      <span className="font-mono">{template.clawatarYawDeg ?? 0}°</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={-45}
+                      max={45}
+                      step={3}
+                      value={template.clawatarYawDeg ?? 0}
+                      onChange={(e) =>
+                        patch({ clawatarYawDeg: Number(e.target.value) })
+                      }
+                      className="accent-pink-500"
+                    />
+                  </label>
+                </div>
+
+                {/* 8 Core Avatar States Quick Selector */}
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-[10px] font-bold text-[var(--pmuted)]">
+                    تجربة حالات الحركة والتعابير الـ 8 مباشرة على المسرح:
+                  </span>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {CLAWATAR_STATE_PRESETS.map((st) => {
+                      const active =
+                        (template.avatarManualState || template.clawatarDefaultAction) === st.stateId ||
+                        template.clawatarDefaultAction === st.actionId;
+                      return (
+                        <button
+                          key={st.stateId}
+                          type="button"
+                          onClick={() => {
+                            patch({
+                              presenterEnabled: true,
+                              presenterStyle: 'clawatar3d',
+                              avatarManualState: st.stateId,
+                              avatarMotionMode: template.avatarMotionMode || 'manualThenAuto',
+                              clawatarDefaultAction:
+                                template.avatarMotionMode === 'manualLocked' ? st.actionId : 'auto',
+                              clawatarExpression: 'auto',
+                            });
+                            const statePoseMap: Record<string, PresenterPoseId> = {
+                              idle: 'explain',
+                              talking: 'waveSpeak',
+                              thinking: 'thinkForehead',
+                              explaining: 'explain',
+                              greeting: 'waveSpeak',
+                              happy: 'celebrate',
+                              surprised: 'leanSuspense',
+                              confused: 'thinkChin',
+                            };
+                            window.dispatchEvent(
+                              new CustomEvent('shortvedio:presenter-demo', {
+                                detail: {
+                                  pose: statePoseMap[st.stateId] || 'explain',
+                                  clawatarStateId: st.stateId,
+                                },
+                              })
+                            );
+                          }}
+                          className={`px-2 py-1.5 rounded-lg border text-right text-[10px] font-bold cursor-pointer transition-colors ${
+                            active
+                              ? 'bg-[#00B050]/18 border-[#00B050] text-[#00B050] dark:text-[#6ee7b7]'
+                              : 'bg-[var(--panel)] border-[var(--pline)] text-[var(--ptxt)] hover:border-pink-400/60'
+                          }`}
+                        >
+                          {st.labelAr}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Per-phase Clawatar VRMA movement overrides */}
+                <details className="rounded-lg bg-[var(--panel)] border border-[var(--pline)] p-2">
+                  <summary className="text-[11px] font-extrabold text-[var(--ptxt)] cursor-pointer select-none">
+                    تخصيص حركة VRMA لكل مرحلة (المقدمة / السؤال / التفكير / الاحتفال / الخاتمة)
+                  </summary>
+                  <div className="grid grid-cols-2 gap-2 mt-2.5">
+                    {(
+                      [
+                        { key: 'intro', label: 'المقدمة (Hook)' },
+                        { key: 'readingQuestion', label: 'قراءة السؤال' },
+                        { key: 'readingOptions', label: 'قراءة الخيارات' },
+                        { key: 'thinking', label: 'التفكير' },
+                        { key: 'suspense', label: 'التشويق' },
+                        { key: 'reveal', label: 'كشف الإجابة' },
+                        { key: 'outro', label: 'الخاتمة' },
+                      ] as const
+                    ).map((ph) => (
+                      <label key={ph.key} className="flex flex-col gap-1">
+                        <span className="text-[10px] text-[var(--pmuted)]">{ph.label}</span>
+                        <select
+                          value={template.clawatarPhaseActions?.[ph.key] || 'auto'}
+                          onChange={(e) =>
+                            patch({
+                              clawatarPhaseActions: {
+                                ...(template.clawatarPhaseActions ?? {}),
+                                [ph.key]: e.target.value,
+                              },
+                            })
+                          }
+                          className="px-2 py-1 rounded-md bg-[var(--surface)] border border-[var(--pline)] text-[10px] font-bold"
+                        >
+                          <option value="auto">تلقائي</option>
+                          {clawatarAnimations.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.labelAr || a.id}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ))}
+                  </div>
+                </details>
+              </div>
+            )}
 
             {template.presenterStyle === 'customPhoto' && (
               <div className="flex items-center gap-2">
@@ -4482,7 +5478,8 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
                       onClick={() => {
                         patch({
                           presenterEnabled: true,
-                          presenterStyle: 'stylized3d',
+                          presenterStyle:
+                            template.presenterStyle === 'clawatar3d' ? 'clawatar3d' : 'stylized3d',
                           presenterLipSyncMode: 'audioAndReading',
                           presenterContinuousTalk: true,
                           presenterTalkIntensity: Math.max(75, template.presenterTalkIntensity ?? 75),
@@ -4496,6 +5493,9 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
                             reveal: 'auto',
                             outro: 'auto',
                           },
+                          ...(template.presenterStyle === 'clawatar3d'
+                            ? { clawatarDefaultAction: 'auto', clawatarExpression: 'auto' }
+                            : {}),
                           ...(template.aiPresenter?.enabled
                             ? { aiPresenter: { ...template.aiPresenter, enabled: false } }
                             : {}),
@@ -4518,7 +5518,8 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
                           onClick={() => {
                             patch({
                               presenterEnabled: true,
-                              presenterStyle: 'stylized3d',
+                              presenterStyle:
+                                template.presenterStyle === 'clawatar3d' ? 'clawatar3d' : 'stylized3d',
                               presenterLipSyncMode: 'audioAndReading',
                               presenterContinuousTalk: true,
                               ...(template.aiPresenter?.enabled
@@ -4614,6 +5615,36 @@ export const TemplateDesignPanel: React.FC<TemplateDesignPanelProps> = ({
           </div>
         )}
       </section>
+
+      <ThemesLibraryModal
+        isOpen={isThemesLibraryOpen}
+        onClose={() => {
+          if (stagePreviewSnapshotRef.current) {
+            onChange(stagePreviewSnapshotRef.current, true);
+            stagePreviewSnapshotRef.current = null;
+          }
+          setIsThemesLibraryOpen(false);
+        }}
+        mode="studio"
+        currentTemplate={stagePreviewSnapshotRef.current ?? template}
+        activeProjectId={activeProjectId}
+        onPreviewOnStage={(previewTpl) => {
+          if (previewTpl) {
+            if (!stagePreviewSnapshotRef.current) {
+              stagePreviewSnapshotRef.current = { ...template };
+            }
+            onChange(previewTpl, false);
+          } else if (stagePreviewSnapshotRef.current) {
+            onChange(stagePreviewSnapshotRef.current, true);
+            stagePreviewSnapshotRef.current = null;
+          }
+        }}
+        onApplyToCurrent={(nextTpl, notice) => {
+          stagePreviewSnapshotRef.current = null;
+          onChange(nextTpl, true);
+          if (notice) showToast(notice);
+        }}
+      />
     </div>
   );
 };

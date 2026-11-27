@@ -1,6 +1,13 @@
 import { soundEngine } from '../audio/soundEngine';
+import { getAllSavedProjectQuestions } from '../storage/projectStore';
 import { getAvoidQuestionsForCategory } from '../storage/questionBankVault';
 import { QUIZ_CATEGORIES, QuestionSlide, QuizCategory, SlideAudioClip } from '../types/quiz';
+import {
+  getSlideSpokenAnswer,
+  getSlideSpokenOption,
+  getSlideSpokenQuestion,
+  prepareArabicSpokenText,
+} from '../utils/arabicPronunciation';
 
 export type AiVoiceName = 'Kore' | 'Puck' | 'Charon' | 'Fenrir' | 'Zephyr';
 export type AiVoiceMode = 'questionOnly' | 'questionAndAnswer' | 'full';
@@ -1440,9 +1447,10 @@ export async function generateSingleTtsClip(
   voiceName: AiVoiceName,
   fileName: string
 ): Promise<SlideAudioClip> {
+  const spokenText = prepareArabicSpokenText(text) || text.trim();
   const consistentStyle =
     'Clear, steady, articulate Modern Standard Arabic quiz presenter; read only the exact provided text cleanly at a natural pace';
-  return generateTtsClip(text, voiceName, fileName, consistentStyle);
+  return generateTtsClip(spokenText, voiceName, fileName, consistentStyle);
 }
 
 export async function fetchTtsQuota(): Promise<TtsQuotaSnapshot | null> {
@@ -1564,10 +1572,11 @@ export async function generateSlideVoiceoverSafe(
     'Clear, steady, articulate Modern Standard Arabic quiz presenter; read only the exact provided text cleanly at a natural pace';
 
   try {
-    if (slide.question.trim()) {
+    const spokenQ = getSlideSpokenQuestion(slide);
+    if (spokenQ) {
       onStep?.('جارٍ توليد صوت السؤال...');
       voiceover.question = await generateTtsClip(
-        slide.question,
+        spokenQ,
         voiceName,
         'ai-question.wav',
         consistentStyle
@@ -1588,12 +1597,12 @@ export async function generateSlideVoiceoverSafe(
             ? 'الطرف'
             : 'الخيار';
       for (let i = 0; i < optCount; i++) {
-        const optText = (slide.options[i] ?? '').trim();
-        if (!optText) continue;
+        const spokenOpt = getSlideSpokenOption(slide, i);
+        if (!spokenOpt) continue;
         await pause(280);
         onStep?.(`جارٍ توليد صوت ${itemLabel} ${i + 1} من ${optCount}...`);
         voiceover.options[i] = await generateTtsClip(
-          optText,
+          spokenOpt,
           voiceName,
           `ai-option-${i + 1}.wav`,
           consistentStyle
@@ -1602,14 +1611,12 @@ export async function generateSlideVoiceoverSafe(
     }
 
     if (mode === 'questionAndAnswer' || mode === 'full') {
-      const ansIdx = slide.slideType === 'clues' ? 3 : slide.correctIndex;
-      const correctOptText = (slide.options[ansIdx] ?? '').trim();
-      if (correctOptText) {
+      const spokenAns = getSlideSpokenAnswer(slide);
+      if (spokenAns) {
         await pause(280);
         onStep?.('جارٍ توليد صوت الإجابة الصحيحة...');
-        const ansText = `الإجابة الصحيحة هي: ${correctOptText}`;
         voiceover.answer = await generateTtsClip(
-          ansText,
+          spokenAns,
           voiceName,
           'ai-answer.wav',
           consistentStyle
@@ -1914,4 +1921,465 @@ Return JSON: {"svg": "<svg ...>...</svg>", "title": "..."}`;
     imageName: `${(data.title || 'صورة لغز بالذكاء').trim()}.png`,
   };
 }
+
+export interface PreparedTtsFieldsResult {
+  spokenQuestion: string;
+  spokenOptions: [string, string, string, string];
+  spokenAnswer: string;
+}
+
+export async function prepareArabicTtsFields(params: {
+  question?: string;
+  options?: string[];
+  answer?: string;
+}): Promise<PreparedTtsFieldsResult> {
+  const cleanQ = (params.question ?? '').trim();
+  const cleanOpts = [0, 1, 2, 3].map((i) => (params.options?.[i] ?? '').trim());
+  const cleanAns = (params.answer ?? '').trim();
+
+  const localFallback: PreparedTtsFieldsResult = {
+    spokenQuestion: cleanQ ? prepareArabicSpokenText(cleanQ) : '',
+    spokenOptions: [
+      cleanOpts[0] ? prepareArabicSpokenText(cleanOpts[0]) : '',
+      cleanOpts[1] ? prepareArabicSpokenText(cleanOpts[1]) : '',
+      cleanOpts[2] ? prepareArabicSpokenText(cleanOpts[2]) : '',
+      cleanOpts[3] ? prepareArabicSpokenText(cleanOpts[3]) : '',
+    ],
+    spokenAnswer: cleanAns ? prepareArabicSpokenText(cleanAns) : '',
+  };
+
+  if (hasAnyEmbeddedTextAiKeys() && !BUILD_API_BASE) {
+    try {
+      const { GoogleGenAI, ThinkingLevel, Type } = await import('@google/genai');
+      const sys =
+        'أنت مدقق لغوي متخصص في ضبط النطق العربي الفصيح (التشكيل الصوتي الصحيح فقط) لمحركات TTS دون تغيير أي كلمة أو معنى.';
+      const prompt = `اضبط التشكيل الصوتي للنصوص التالية للنطق العربي الواضح:
+السؤال: ${cleanQ || '(فارغ)'}
+الخيارات: ${JSON.stringify(cleanOpts)}
+الإجابة: ${cleanAns || '(فارغ)'}
+أرجع JSON: {"spokenQuestion":"...","spokenOptions":["...","...","...","..."],"spokenAnswer":"..."}`;
+
+      let parsed: Partial<PreparedTtsFieldsResult> | null = null;
+      if (EMBEDDED_CLIENT_GEMINI_KEYS.length > 0) {
+        const res = await runApkGeminiWithRotation(async (apiKey) => {
+          const ai = new GoogleGenAI({ apiKey });
+          return ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite',
+            contents: prompt,
+            config: {
+              temperature: 0.15,
+              thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+              systemInstruction: sys,
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  spokenQuestion: { type: Type.STRING },
+                  spokenOptions: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  spokenAnswer: { type: Type.STRING },
+                },
+                required: ['spokenQuestion', 'spokenOptions', 'spokenAnswer'],
+              },
+            },
+          });
+        });
+        parsed = extractClientJsonPayload(res.text ?? '{}') as Partial<PreparedTtsFieldsResult>;
+      } else {
+        parsed = (await runApkExternalJsonFallback(sys, prompt)) as Partial<PreparedTtsFieldsResult>;
+      }
+      return {
+        spokenQuestion: cleanQ
+          ? prepareArabicSpokenText(String(parsed?.spokenQuestion || cleanQ))
+          : '',
+        spokenOptions: [0, 1, 2, 3].map((i) =>
+          cleanOpts[i]
+            ? prepareArabicSpokenText(String(parsed?.spokenOptions?.[i] || cleanOpts[i]))
+            : ''
+        ) as [string, string, string, string],
+        spokenAnswer: cleanAns
+          ? prepareArabicSpokenText(String(parsed?.spokenAnswer || cleanAns))
+          : '',
+      };
+    } catch {
+      return localFallback;
+    }
+  }
+
+  try {
+    const res = await fetchAi('/api/ai/prepare-tts-text', {
+      question: cleanQ,
+      options: cleanOpts,
+      answer: cleanAns,
+    });
+    const data = await parseJsonSafe<Partial<PreparedTtsFieldsResult> & { error?: string }>(res);
+    if (!res.ok) return localFallback;
+    return {
+      spokenQuestion: cleanQ
+        ? prepareArabicSpokenText(String(data.spokenQuestion || cleanQ))
+        : '',
+      spokenOptions: [0, 1, 2, 3].map((i) =>
+        cleanOpts[i] ? prepareArabicSpokenText(String(data.spokenOptions?.[i] || cleanOpts[i])) : ''
+      ) as [string, string, string, string],
+      spokenAnswer: cleanAns
+        ? prepareArabicSpokenText(String(data.spokenAnswer || cleanAns))
+        : '',
+    };
+  } catch {
+    return localFallback;
+  }
+}
+
+export interface VerifiedEvidenceResult {
+  fact: string;
+  source: string;
+  confident: boolean;
+  suggestedDuration: number;
+}
+
+export async function generateVerifiedEvidence(params: {
+  question: string;
+  correctAnswer: string;
+  category?: QuizCategory;
+}): Promise<VerifiedEvidenceResult> {
+  const cleanQ = params.question.trim();
+  const cleanAns = params.correctAnswer.trim();
+  if (!cleanQ || !cleanAns) {
+    throw new AiApiError('اكتب نص السؤال والإجابة الصحيحة أولاً.', 400);
+  }
+  const catMeta = getCategoryMeta(params.category ?? 'general');
+
+  if (hasAnyEmbeddedTextAiKeys() && !BUILD_API_BASE) {
+    try {
+      const { GoogleGenAI, ThinkingLevel, Type } = await import('@google/genai');
+      const sys =
+        'أنت باحث علمي وتاريخي وشرعي دقيق. اكتب بطاقة دليل ومعلومة موثقة مختصرة (<16 كلمة). لا تختلق أبداً أي آية أو حديث أو مصدر غير مؤكد 100%؛ عند عدم اليقين اترك source فارغاً واجعل confident: false.';
+      const prompt = `التصنيف: ${catMeta.label}\nالسؤال: ${cleanQ}\nالإجابة: ${cleanAns}\nJSON: {"fact":"...","source":"...","confident":true,"suggestedDuration":4}`;
+
+      let parsed: Partial<VerifiedEvidenceResult> | null = null;
+      if (EMBEDDED_CLIENT_GEMINI_KEYS.length > 0) {
+        const res = await runApkGeminiWithRotation(async (apiKey) => {
+          const ai = new GoogleGenAI({ apiKey });
+          return ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite',
+            contents: prompt,
+            config: {
+              temperature: 0.25,
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+              systemInstruction: sys,
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  fact: { type: Type.STRING },
+                  source: { type: Type.STRING },
+                  confident: { type: Type.BOOLEAN },
+                  suggestedDuration: { type: Type.NUMBER },
+                },
+                required: ['fact', 'source', 'confident'],
+              },
+            },
+          });
+        });
+        parsed = extractClientJsonPayload(res.text ?? '{}') as Partial<VerifiedEvidenceResult>;
+      } else {
+        parsed = (await runApkExternalJsonFallback(sys, prompt)) as Partial<VerifiedEvidenceResult>;
+      }
+      const confident = parsed?.confident !== false;
+      return {
+        fact: String(parsed?.fact || '').trim(),
+        source: confident ? String(parsed?.source || '').trim() : '',
+        confident,
+        suggestedDuration: Math.max(2, Math.min(10, Math.round(Number(parsed?.suggestedDuration) || 4))),
+      };
+    } catch (err) {
+      if (err instanceof AiApiError) throw err;
+      throw formatGeminiClientError(err);
+    }
+  }
+
+  const res = await fetchAi('/api/ai/generate-evidence', {
+    question: cleanQ,
+    correctAnswer: cleanAns,
+    categoryLabel: catMeta.label,
+  });
+  const data = await parseJsonSafe<Partial<VerifiedEvidenceResult> & { error?: string; quotaExhausted?: boolean }>(
+    res
+  );
+  if (!res.ok) {
+    throw new AiApiError(
+      data.error || 'تعذر توليد بطاقة الدليل والمعلومة.',
+      res.status,
+      Boolean(data.quotaExhausted)
+    );
+  }
+  const confident = data.confident !== false;
+  return {
+    fact: String(data.fact || '').trim(),
+    source: confident ? String(data.source || '').trim() : '',
+    confident,
+    suggestedDuration: Math.max(2, Math.min(10, Math.round(Number(data.suggestedDuration) || 4))),
+  };
+}
+
+export type SeriesPresetId =
+  | 'seerah'
+  | 'prophets'
+  | 'sahaba'
+  | 'friday'
+  | 'history'
+  | 'science'
+  | 'custom';
+
+export interface SeriesPresetOption {
+  id: SeriesPresetId;
+  label: string;
+  description: string;
+  defaultTopic: string;
+  category: QuizCategory;
+  recommendedThemeId?: string;
+}
+
+export const SERIES_PRESETS: SeriesPresetOption[] = [
+  {
+    id: 'seerah',
+    label: 'السيرة النبوية',
+    description: 'حلقات متسلسلة من المولد النبوي والبعثة والهجرة والغزوات.',
+    defaultTopic: 'محطات مضيئة من السيرة النبوية الشريفة',
+    category: 'islamic',
+    recommendedThemeId: 'islamic-emerald',
+  },
+  {
+    id: 'prophets',
+    label: 'قصص الأنبياء',
+    description: 'أسئلة تربوية وتاريخية عن معجزات الأنبياء ومواقفهم.',
+    defaultTopic: 'روائع قصص الأنبياء ومعجزاتهم',
+    category: 'islamic',
+    recommendedThemeId: 'islamic-emerald',
+  },
+  {
+    id: 'sahaba',
+    label: 'الصحابة الكرام',
+    description: 'سير ومناقب الصحابة ومواقفهم الخالدة في نصرة الحق.',
+    defaultTopic: 'مواقف ومناقب الصحابة الكرام رضوان الله عليهم',
+    category: 'islamic',
+    recommendedThemeId: 'royal-gold',
+  },
+  {
+    id: 'friday',
+    label: 'مسابقات الجمعة',
+    description: 'سلسلة مسابقات دينية وثقافية خفيفة ومحببة ليوم الجمعة.',
+    defaultTopic: 'مسابقة الجمعة الثقافية والقرآنية المتنوعة',
+    category: 'islamic',
+    recommendedThemeId: 'islamic-emerald',
+  },
+  {
+    id: 'history',
+    label: 'سلاسل تاريخية',
+    description: 'فتوحات وحضارات وشخصيات صنعت التاريخ الإسلامي والعالمي.',
+    defaultTopic: 'منعطفات وحضارات خالدة في التاريخ',
+    category: 'history',
+    recommendedThemeId: 'historical-bronze',
+  },
+  {
+    id: 'science',
+    label: 'سلاسل علمية',
+    description: 'الكون والفيزياء وعجائب الطبيعة والاختراعات الحديثة.',
+    defaultTopic: 'أسرار الكون والعجائب العلمية المذهلة',
+    category: 'science',
+    recommendedThemeId: 'science-lab',
+  },
+  {
+    id: 'custom',
+    label: 'سلسلة عامة مخصصة',
+    description: 'اختر موضوعك الخاص لبناء حلقات مترابطة ومرقمة فوراً.',
+    defaultTopic: 'تحدي المعلومات الشامل',
+    category: 'general',
+    recommendedThemeId: 'cinematic-dark',
+  },
+];
+
+export interface GeneratedSeriesEpisodePayload {
+  episodeNumber: number;
+  title: string;
+  subtitle: string;
+  cliffhangerText: string;
+  youtubeTitle: string;
+  youtubeDescription: string;
+  youtubePinnedComment: string;
+  slides: QuestionSlide[];
+}
+
+export interface GeneratedSeriesResult {
+  seriesTitle: string;
+  episodes: GeneratedSeriesEpisodePayload[];
+}
+
+export async function generateConnectedQuizSeries(params: {
+  presetId: SeriesPresetId;
+  customTopic?: string;
+  episodeCount: number;
+  questionsPerEpisode: number;
+  difficulty?: string;
+  includeCliffhanger?: boolean;
+  extraAvoidQuestions?: string[];
+}): Promise<GeneratedSeriesResult> {
+  const preset = SERIES_PRESETS.find((p) => p.id === params.presetId) ?? SERIES_PRESETS[6];
+  const categoryMeta = getCategoryMeta(preset.category);
+  const bankAvoid = await getAvoidQuestionsForCategory(preset.category, 40);
+  const projectAvoid = await getAllSavedProjectQuestions();
+  const mergedAvoid = Array.from(
+    new Set(
+      [
+        ...getRecentAiQuestions(),
+        ...(params.extraAvoidQuestions ?? []),
+        ...bankAvoid,
+        ...projectAvoid.map((p) => p.question),
+      ]
+        .map((q) => q.trim())
+        .filter((q) => q.length >= 4)
+    )
+  ).slice(-60);
+
+  const topic = (params.customTopic || preset.defaultTopic).trim();
+
+  if (hasAnyEmbeddedTextAiKeys() && !BUILD_API_BASE) {
+    try {
+      const { GoogleGenAI, ThinkingLevel, Type } = await import('@google/genai');
+      const epCount = Math.max(2, Math.min(12, Math.round(params.episodeCount || 4)));
+      const qPerEp = Math.max(1, Math.min(6, Math.round(params.questionsPerEpisode || 3)));
+      const sys =
+        'أنت منتج سلاسل مسابقات عربية احترافية لقنوات يوتيوب شورتس. تلتزم بالدقة التاريخية والشرعية والعلمية ولا تختلق أبداً أي آية أو حديث أو مرجع غير مؤكد.';
+      const prompt = `أنشئ سلسلة متكاملة بعنوان/موضوع "${topic}" (${preset.label}) تتكون من ${epCount} حلقات مرقمة، في كل حلقة ${qPerEp} أسئلة مختلفة (4 خيارات)، مستوى الصعوبة: ${params.difficulty || 'متوسط'}.
+تجنب تكرار: ${mergedAvoid.slice(0, 25).join(' | ')}
+أرجع JSON: {"seriesTitle":"...","episodes":[{"episodeNumber":1,"title":"...","subtitle":"...","cliffhangerText":"...","youtubeTitle":"...","youtubeDescription":"...","youtubePinnedComment":"...","slides":[{"badgeText":"...","question":"...","options":["...","...","...","..."],"correctIndex":0,"explanationText":"...","explanationSource":""}]}]}`;
+
+      let parsed: Partial<GeneratedSeriesResult> | null = null;
+      if (EMBEDDED_CLIENT_GEMINI_KEYS.length > 0) {
+        const res = await runApkGeminiWithRotation(async (apiKey) => {
+          const ai = new GoogleGenAI({ apiKey });
+          return ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite',
+            contents: prompt,
+            config: {
+              temperature: 0.75,
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+              systemInstruction: sys,
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  seriesTitle: { type: Type.STRING },
+                  episodes: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        episodeNumber: { type: Type.INTEGER },
+                        title: { type: Type.STRING },
+                        subtitle: { type: Type.STRING },
+                        cliffhangerText: { type: Type.STRING },
+                        youtubeTitle: { type: Type.STRING },
+                        youtubeDescription: { type: Type.STRING },
+                        youtubePinnedComment: { type: Type.STRING },
+                        slides: {
+                          type: Type.ARRAY,
+                          items: {
+                            type: Type.OBJECT,
+                            properties: {
+                              badgeText: { type: Type.STRING },
+                              question: { type: Type.STRING },
+                              options: { type: Type.ARRAY, items: { type: Type.STRING } },
+                              correctIndex: { type: Type.INTEGER },
+                              explanationText: { type: Type.STRING },
+                              explanationSource: { type: Type.STRING },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          });
+        });
+        parsed = extractClientJsonPayload(res.text ?? '{}') as Partial<GeneratedSeriesResult>;
+      } else {
+        parsed = (await runApkExternalJsonFallback(sys, prompt)) as Partial<GeneratedSeriesResult>;
+      }
+      const episodes = (Array.isArray(parsed?.episodes) ? parsed.episodes : [])
+        .slice(0, epCount)
+        .map((ep, idx) => ({
+          episodeNumber: Number(ep.episodeNumber) || idx + 1,
+          title: String(ep.title || `${topic} — الحلقة ${idx + 1}`).trim(),
+          subtitle: String(ep.subtitle || '').trim(),
+          cliffhangerText: String(ep.cliffhangerText || '').trim(),
+          youtubeTitle: String(ep.youtubeTitle || `${topic} - الحلقة ${idx + 1} #Shorts`).trim(),
+          youtubeDescription: String(ep.youtubeDescription || '').trim(),
+          youtubePinnedComment: String(ep.youtubePinnedComment || '').trim(),
+          slides: (Array.isArray(ep.slides) ? ep.slides : []).slice(0, qPerEp).map((s, sIdx) => ({
+            id: `series-apk-${idx + 1}-${sIdx + 1}-${Date.now()}`,
+            slideType: 'multiple' as const,
+            category: preset.category,
+            badgeText: String(s.badgeText || `الحلقة ${idx + 1} · سؤال ${sIdx + 1}`),
+            question: String(s.question || ''),
+            options: [
+              String(s.options?.[0] || ''),
+              String(s.options?.[1] || ''),
+              String(s.options?.[2] || ''),
+              String(s.options?.[3] || ''),
+            ] as [string, string, string, string],
+            correctIndex: Math.max(0, Math.min(3, Number(s.correctIndex) || 0)) as 0 | 1 | 2 | 3,
+            explanationText: String(s.explanationText || ''),
+            explanationSource: String(s.explanationSource || '').trim() || undefined,
+            episodeCliffhanger:
+              params.includeCliffhanger !== false && sIdx === qPerEp - 1
+                ? String(ep.cliffhangerText || '').trim() || undefined
+                : undefined,
+          })),
+        }))
+        .filter((ep) => ep.slides.length > 0);
+      if (episodes.length === 0) {
+        throw new AiApiError('لم يتمكن الذكاء من إنشاء حلقات صالحة للسلسلة.', 502);
+      }
+      recordRecentAiQuestions(episodes.flatMap((e) => e.slides.map((s) => s.question)));
+      return {
+        seriesTitle: String(parsed?.seriesTitle || preset.label).trim(),
+        episodes,
+      };
+    } catch (err) {
+      if (err instanceof AiApiError) throw err;
+      throw formatGeminiClientError(err);
+    }
+  }
+
+  const res = await fetchAi('/api/ai/generate-series', {
+    presetId: params.presetId,
+    seriesTitle: preset.label,
+    customTopic: topic,
+    episodeCount: params.episodeCount,
+    questionsPerEpisode: params.questionsPerEpisode,
+    difficulty: params.difficulty ?? 'متوسط',
+    category: preset.category,
+    categoryHint: `${categoryMeta.label} (${categoryMeta.promptHint})`,
+    includeCliffhanger: params.includeCliffhanger !== false,
+    avoidQuestions: mergedAvoid,
+  });
+  const data = await parseJsonSafe<Partial<GeneratedSeriesResult> & { error?: string; quotaExhausted?: boolean }>(
+    res
+  );
+  if (!res.ok || !Array.isArray(data.episodes) || data.episodes.length === 0) {
+    throw new AiApiError(
+      data.error || 'تعذر توليد السلسلة المتكاملة من الخادم.',
+      res.status,
+      Boolean(data.quotaExhausted)
+    );
+  }
+  recordRecentAiQuestions(data.episodes.flatMap((e) => e.slides.map((s) => s.question)));
+  return {
+    seriesTitle: data.seriesTitle || preset.label,
+    episodes: data.episodes,
+  };
+}
+
 

@@ -78,6 +78,8 @@ import {
   TemplateSettings,
 } from '../types/quiz';
 import { isAndroidNativeApp, saveOrDownloadBlob } from '../utils/nativeDownload';
+import { DuplicateMatchItem, findDuplicateMatches } from '../utils/duplicateDetector';
+import { DuplicateDecision, DuplicateWarningBanner } from './DuplicateWarningBanner';
 import { TtsQuotaBanner } from './TtsQuotaBanner';
 
 interface AiGeneratorPanelProps {
@@ -243,6 +245,13 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
   const [isGenerating, setIsGenerating] = useState(false);
   const [statusText, setStatusText] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [pendingAiReview, setPendingAiReview] = useState<{
+    slides: QuestionSlide[];
+    insertMode: 'append' | 'replace';
+    topicLabel: string;
+    matches: DuplicateMatchItem[];
+  } | null>(null);
+  const [dupDecisions, setDupDecisions] = useState<Record<number, DuplicateDecision>>({});
 
   // Hook Templates State (intro slide + custom SFX)
   const [hookEnabled, setHookEnabled] = useState<boolean>(() =>
@@ -513,35 +522,26 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
     }
   };
 
-  const handleGenerate = async (insertMode: 'append' | 'replace') => {
-    const trimmed = topic.trim() || selectedCategoryMeta.promptHint;
-
-    try {
-      soundEngine.getContext();
-    } catch {
-      // ignore
+  const finalizeAiInsert = async (
+    slidesToInsert: QuestionSlide[],
+    insertMode: 'append' | 'replace',
+    topicLabel: string
+  ) => {
+    if (slidesToInsert.length === 0) {
+      setStatusText('');
+      setErrorMsg('تم استبعاد جميع الأسئلة المكررة ولم يتبقَّ أسئلة جديدة للإدراج.');
+      setPendingAiReview(null);
+      return;
     }
 
-    setErrorMsg('');
     setIsGenerating(true);
-    setStatusText(`جارٍ تأليف ${count} أسئلة (${selectedCategoryMeta.label}) بالذكاء الاصطناعي...`);
-
+    setErrorMsg('');
     try {
-      const slides = await generateAiQuizSlides(
-        trimmed,
-        count,
-        difficulty,
-        contentType,
-        existingQuestions,
-        selectedCategory
-      );
-
-      // Persist immediately in Question Bank Vault marked as used (since inserted into video)
       const folderPath = targetFolderId ? buildFolderBreadcrumb(targetFolderId, bankFolders) : undefined;
       const directSaved = await addQuestionsToBank(
-        slides,
+        slidesToInsert,
         selectedCategory,
-        trimmed.slice(0, 48),
+        topicLabel.slice(0, 48),
         true,
         targetFolderId || undefined,
         folderPath
@@ -563,18 +563,18 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
         const resultSlides: QuestionSlide[] = [];
         let quotaWarning: string | undefined;
 
-        for (let i = 0; i < slides.length; i++) {
+        for (let i = 0; i < slidesToInsert.length; i++) {
           if (quotaWarning) {
-            resultSlides.push(slides[i]);
+            resultSlides.push(slidesToInsert[i]);
             continue;
           }
 
           const res = await generateSlideVoiceoverSafe(
-            slides[i],
+            slidesToInsert[i],
             voiceName,
             voiceMode,
             (stepLabel) =>
-              setStatusText(`السؤال ${i + 1} من ${slides.length}: ${stepLabel}`)
+              setStatusText(`السؤال ${i + 1} من ${slidesToInsert.length}: ${stepLabel}`)
           );
           resultSlides.push(res.slide);
 
@@ -594,16 +594,71 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
         );
       } else {
         const hookRes = await buildHookTemplatePatch(false);
-        onInsertSlides(slides, insertMode, false, undefined, themePreset, hookRes.patch);
+        onInsertSlides(slidesToInsert, insertMode, false, undefined, themePreset, hookRes.patch);
       }
 
+      setPendingAiReview(null);
+      setDupDecisions({});
       setStatusText('');
+      window.dispatchEvent(new CustomEvent('shortvedio:presenter-demo', { detail: { pose: 'celebrate' } }));
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'حدث خطأ أثناء الإدراج، حاول مجدداً.');
+      setStatusText('');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleGenerate = async (insertMode: 'append' | 'replace') => {
+    const trimmed = topic.trim() || selectedCategoryMeta.promptHint;
+
+    try {
+      soundEngine.getContext();
+    } catch {
+      // ignore
+    }
+
+    setErrorMsg('');
+    setPendingAiReview(null);
+    setIsGenerating(true);
+    setStatusText(`جارٍ تأليف ${count} أسئلة (${selectedCategoryMeta.label}) بالذكاء الاصطناعي...`);
+    window.dispatchEvent(new CustomEvent('shortvedio:presenter-demo', { detail: { pose: 'thinkForehead' } }));
+
+    try {
+      const slides = await generateAiQuizSlides(
+        trimmed,
+        count,
+        difficulty,
+        contentType,
+        existingQuestions,
+        selectedCategory
+      );
+
+      setStatusText('جارٍ فحص التكرار الدلالي مع البنك والمشاريع المحفوظة...');
+      const matches = await findDuplicateMatches(slides, {
+        currentSlides: existingQuestions.map((q) => ({ question: q }) as QuestionSlide),
+        includeBank: true,
+        includeSavedProjects: true,
+      });
+
+      if (matches.length > 0) {
+        const initDecisions: Record<number, DuplicateDecision> = {};
+        matches.forEach((m) => {
+          initDecisions[m.candidateIndex] = 'pending';
+        });
+        setDupDecisions(initDecisions);
+        setPendingAiReview({ slides, insertMode, topicLabel: trimmed, matches });
+        setStatusText('');
+        setIsGenerating(false);
+        return;
+      }
+
+      await finalizeAiInsert(slides, insertMode, trimmed);
     } catch (err) {
       setErrorMsg(
         err instanceof Error ? err.message : 'حدث خطأ أثناء التوليد، حاول مجدداً.'
       );
       setStatusText('');
-    } finally {
       setIsGenerating(false);
     }
   };
@@ -1973,6 +2028,42 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
         <div className="px-3.5 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-400">
           {errorMsg}
         </div>
+      )}
+
+      {subTab === 'direct' && pendingAiReview && (
+        <DuplicateWarningBanner
+          matches={pendingAiReview.matches}
+          decisions={dupDecisions}
+          onDecisionChange={(idx, d) =>
+            setDupDecisions((prev) => ({ ...prev, [idx]: d }))
+          }
+          onAcceptAll={() => {
+            const all: Record<number, DuplicateDecision> = {};
+            pendingAiReview.matches.forEach((m) => {
+              all[m.candidateIndex] = 'keep';
+            });
+            setDupDecisions(all);
+          }}
+          onSkipAll={() => {
+            const all: Record<number, DuplicateDecision> = {};
+            pendingAiReview.matches.forEach((m) => {
+              all[m.candidateIndex] = 'skip';
+            });
+            setDupDecisions(all);
+          }}
+          onConfirmApply={() => {
+            const approved = pendingAiReview.slides.filter(
+              (_, idx) => dupDecisions[idx] !== 'skip'
+            );
+            void finalizeAiInsert(
+              approved,
+              pendingAiReview.insertMode,
+              pendingAiReview.topicLabel
+            );
+          }}
+          onDismiss={() => setPendingAiReview(null)}
+          confirmLabel="اعتماد الأسئلة ومتابعة التجهيز"
+        />
       )}
 
       {/* Action Buttons for Direct Tab */}

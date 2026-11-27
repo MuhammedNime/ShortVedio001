@@ -1744,6 +1744,489 @@ Return JSON object with fields:
     }
   });
 
+  // Prepare Arabic spoken TTS text (preserves exact words & meaning, adds only clarifying diacritics)
+  app.post('/api/ai/prepare-tts-text', async (req, res) => {
+    try {
+      const { question, options, answer } = req.body as {
+        question?: string;
+        options?: string[];
+        answer?: string;
+      };
+
+      const cleanQ = typeof question === 'string' ? question.trim().slice(0, 600) : '';
+      const cleanOpts = Array.isArray(options)
+        ? options.slice(0, 4).map((o) => String(o ?? '').trim().slice(0, 250))
+        : [];
+      const cleanAns = typeof answer === 'string' ? answer.trim().slice(0, 350) : '';
+
+      if (!cleanQ && cleanOpts.every((o) => !o) && !cleanAns) {
+        res.status(400).json({ error: 'أرسل نصاً واحداً على الأقل لتجهيز النطق الصوتي.' });
+        return;
+      }
+
+      const ttsSysInstruction =
+        'أنت مدقق لغوي متخصص في ضبط النطق العربي الفصيح (التشكيل الصوتي الصحيح فقط) لمحركات التحويل الصوتي (TTS). أضف التشكيل اللازم لمنع اللبس في النطق (خاصة الأفعال المبنية للمجهول، الأسماء التاريخية والشرعية، الأعلام، والألفاظ المتشابهة) دون تغيير أي كلمة أو معنى أو إضافة كلمات جديدة. اترك الرموز والأرقام واضحة ومقروءة بالعربية.';
+
+      const ttsPrompt = `اضبط التشكيل الصوتي بدقة للنصوص التالية لتقرأها ناطقة عربية بفصاحة ووضوح دون أي تغيير في الكلمات أو المعنى:
+السؤال: ${cleanQ || '(فارغ)'}
+الخيارات: ${JSON.stringify(cleanOpts)}
+الإجابة: ${cleanAns || '(فارغ)'}
+
+أرجع JSON فقط بالشكل التالي:
+{
+  "spokenQuestion": "...",
+  "spokenOptions": ["...", "...", "...", "..."],
+  "spokenAnswer": "..."
+}`;
+
+      const { data: result, provider: usedProvider } = await runTextJsonAcrossProviders({
+        geminiTask: async (ai, model) => {
+          const response = await ai.models.generateContent({
+            model,
+            contents: ttsPrompt,
+            config: {
+              temperature: 0.15,
+              thinkingConfig: {
+                thinkingLevel:
+                  model === 'gemini-3.1-flash-lite'
+                    ? ThinkingLevel.MINIMAL
+                    : ThinkingLevel.LOW,
+              },
+              systemInstruction: ttsSysInstruction,
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  spokenQuestion: { type: Type.STRING },
+                  spokenOptions: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                  },
+                  spokenAnswer: { type: Type.STRING },
+                },
+                required: ['spokenQuestion', 'spokenOptions', 'spokenAnswer'],
+              },
+            },
+          });
+          return response.text ?? '{}';
+        },
+        externalSystemInstruction: ttsSysInstruction,
+        externalUserPrompt: ttsPrompt,
+        parseAndValidate: (payload) => {
+          const parsed = (payload && typeof payload === 'object' ? payload : {}) as {
+            spokenQuestion?: string;
+            spokenOptions?: string[];
+            spokenAnswer?: string;
+          };
+          const outOpts = [0, 1, 2, 3].map((idx) => {
+            const orig = cleanOpts[idx] ?? '';
+            if (!orig) return '';
+            const candidate = String(parsed.spokenOptions?.[idx] ?? '').trim();
+            return candidate || orig;
+          });
+          return {
+            spokenQuestion: cleanQ ? String(parsed.spokenQuestion || cleanQ).trim() : '',
+            spokenOptions: outOpts,
+            spokenAnswer: cleanAns ? String(parsed.spokenAnswer || cleanAns).trim() : '',
+          };
+        },
+      });
+
+      res.json({ ...result, provider: usedProvider });
+    } catch (err) {
+      const formatted = formatGeminiError(err, 'text');
+      res.status(formatted.status).json({
+        error: formatted.message,
+        quotaExhausted: formatted.quotaExhausted,
+      });
+    }
+  });
+
+  // Generate grounded, non-fabricated Evidence & Fact card for reveal screen
+  app.post('/api/ai/generate-evidence', async (req, res) => {
+    try {
+      const { question, correctAnswer, categoryLabel } = req.body as {
+        question?: string;
+        correctAnswer?: string;
+        categoryLabel?: string;
+      };
+
+      const cleanQ = typeof question === 'string' ? question.trim().slice(0, 500) : '';
+      const cleanAns = typeof correctAnswer === 'string' ? correctAnswer.trim().slice(0, 250) : '';
+      if (!cleanQ || !cleanAns) {
+        res.status(400).json({ error: 'السؤال والإجابة الصحيحة مطلوبان لتوليد بطاقة الدليل والمعلومة.' });
+        return;
+      }
+
+      const evidenceSys = `أنت باحث علمي وتاريخي وشرعي دقيق جداً. مهمتك كتابة بطاقة "دليل ومعلومة" مختصرة تظهر للمشاهد بعد كشف الإجابة الصحيحة.
+قواعد صارمة جداً:
+1. لا تختلق أبداً أي آية قرآنية أو حديث نبوي أو رقم آية أو اسم كتاب أو تاريخ إذا لم تكن متأكداً منه بنسبة 100%.
+2. إذا لم تكن متأكداً من نص المصدر أو المرجع الدقيق، اجعل الحقل source فارغاً تماماً واكتب فقط المعلومة المؤكدة بإيجاز أو اجعل confident: false.
+3. اجعل fact مختصرة ومباشرة (أقل من 16 كلمة) ومفيدة للمشاهد في فيديو شورتس.
+4. اجعل source اسم مرجع قصير ومؤكد فقط عند اليقين (مثال: "سورة البقرة - آية 255" أو "صحيح البخاري" أو "تاريخ الطبري" أو اتركه فارغاً "").`;
+
+      const evidencePrompt = `التصنيف: ${categoryLabel || 'ثقافة عامة'}
+السؤال: ${cleanQ}
+الإجابة الصحيحة: ${cleanAns}
+
+أرجع JSON فقط:
+{
+  "fact": "معلومة موثقة مختصرة (أقل من 16 كلمة)",
+  "source": "المصدر المؤكد فقط أو نص فارغ إذا لم يكن هناك مرجع قطعي",
+  "confident": true,
+  "suggestedDuration": 4
+}`;
+
+      const { data: result, provider: usedProvider } = await runTextJsonAcrossProviders({
+        geminiTask: async (ai, model) => {
+          const response = await ai.models.generateContent({
+            model,
+            contents: evidencePrompt,
+            config: {
+              temperature: 0.25,
+              thinkingConfig: {
+                thinkingLevel:
+                  model === 'gemini-3.1-flash-lite'
+                    ? ThinkingLevel.MINIMAL
+                    : ThinkingLevel.LOW,
+              },
+              systemInstruction: evidenceSys,
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  fact: { type: Type.STRING },
+                  source: { type: Type.STRING },
+                  confident: { type: Type.BOOLEAN },
+                  suggestedDuration: { type: Type.NUMBER },
+                },
+                required: ['fact', 'source', 'confident'],
+              },
+            },
+          });
+          return response.text ?? '{}';
+        },
+        externalSystemInstruction: evidenceSys,
+        externalUserPrompt: evidencePrompt,
+        parseAndValidate: (payload) => {
+          const parsed = (payload && typeof payload === 'object' ? payload : {}) as {
+            fact?: string;
+            source?: string;
+            confident?: boolean;
+            suggestedDuration?: number;
+          };
+          const confident = parsed.confident !== false;
+          const fact = String(parsed.fact || '').trim().slice(0, 220);
+          const source = confident ? String(parsed.source || '').trim().slice(0, 90) : '';
+          const suggestedDuration = Math.max(
+            2,
+            Math.min(10, Math.round(Number(parsed.suggestedDuration) || 4))
+          );
+          if (!fact) {
+            return {
+              fact: '',
+              source: '',
+              confident: false,
+              suggestedDuration: 4,
+            };
+          }
+          return { fact, source, confident, suggestedDuration };
+        },
+      });
+
+      res.json({ ...result, provider: usedProvider });
+    } catch (err) {
+      const formatted = formatGeminiError(err, 'text');
+      res.status(formatted.status).json({
+        error: formatted.message,
+        quotaExhausted: formatted.quotaExhausted,
+      });
+    }
+  });
+
+  // Generate a complete connected multi-episode Quiz Series in 1 click
+  app.post('/api/ai/generate-series', async (req, res) => {
+    try {
+      const {
+        presetId,
+        seriesTitle,
+        customTopic,
+        episodeCount,
+        questionsPerEpisode,
+        difficulty,
+        category,
+        categoryHint,
+        includeCliffhanger,
+        avoidQuestions,
+      } = req.body as {
+        presetId?: string;
+        seriesTitle?: string;
+        customTopic?: string;
+        episodeCount?: number;
+        questionsPerEpisode?: number;
+        difficulty?: string;
+        category?: string;
+        categoryHint?: string;
+        includeCliffhanger?: boolean;
+        avoidQuestions?: string[];
+      };
+
+      const safeEpCount = Math.max(2, Math.min(12, Math.round(Number(episodeCount) || 4)));
+      const safeQPerEp = Math.max(1, Math.min(6, Math.round(Number(questionsPerEpisode) || 3)));
+      const allowedCategories = new Set([
+        'general',
+        'discussion',
+        'sports',
+        'geography',
+        'science',
+        'history',
+        'islamic',
+        'technology',
+        'literature',
+        'math',
+      ]);
+      const safeCategory = allowedCategories.has(String(category || ''))
+        ? String(category)
+        : 'general';
+      const cleanTopic = (customTopic || seriesTitle || 'سلسلة مسابقات معرفية').trim().slice(0, 200);
+      const diffLabel = (difficulty || 'متوسط').trim();
+      const useCliffhanger = includeCliffhanger !== false;
+
+      const cleanAvoid = Array.isArray(avoidQuestions)
+        ? avoidQuestions.map((q) => String(q ?? '').trim()).filter(Boolean).slice(0, 60)
+        : [];
+      const avoidNormSet = new Set(cleanAvoid.map((q) => normalizeQuestionForDedup(q)));
+      const avoidBlock =
+        cleanAvoid.length > 0
+          ? `\nممنوع تكرار أو إعادة صياغة أي سؤال من الأسئلة الموجودة مسبقاً التالية:\n${cleanAvoid
+              .map((q, idx) => `${idx + 1}. ${q}`)
+              .join('\n')}`
+          : '';
+
+      const seriesSystem = `أنت كاتب ومنتج سلاسل مسابقات عربية احترافية لقنوات YouTube Shorts.
+تلتزم بالدقة التاريخية والشرعية والعلمية 100% ولا تختلق أي معلومة أو آية أو حديث غير مؤكد.
+يجب أن تكون الحلقات متصلة ومتدرجة موضوعياً، ولكل حلقة عنوان واضح مرقّم وسلاسة تشويقية.`;
+
+      const seriesPrompt = `المطلوب إنشاء سلسلة مسابقات متكاملة ومترابطة الحلقات.
+نوع السلسلة: ${presetId || 'custom'} — الموضوع: "${cleanTopic}"
+التصنيف: ${categoryHint || safeCategory}
+عدد الحلقات المطلوب: ${safeEpCount} حلقات مرقمة ومرتبطة زمنياً أو موضوعياً.
+عدد الأسئلة في كل حلقة: ${safeQPerEp} أسئلة مختلفة كلياً من نمط 4 خيارات.
+مستوى الصعوبة: ${diffLabel}
+${useCliffhanger ? 'أضف في كل حلقة (ما عدا الأخيرة أو كتشويق عام) جملة episodeCliffhanger قصيرة مشوقة للحلقة القادمة (أقل من 10 كلمات).' : ''}
+${avoidBlock}
+
+لكل سؤال:
+- badgeText: شارة قصيرة (مثال: الحلقة 1 · سؤال 1)
+- question: سؤال واضح ومباشر (أقل من 15 كلمة)
+- options: 4 خيارات قصيرة بالضبط
+- correctIndex: رقم من 0 إلى 3
+- explanationText: معلومة موثقة ومختصرة جداً (أقل من 14 كلمة)
+- explanationSource: مصدر قصير وموثق إذا كان مؤكداً 100% وإلا نص فارغ ""
+
+أرجع JSON فقط بالشكل التالي:
+{
+  "seriesTitle": "عنوان السلسلة",
+  "episodes": [
+    {
+      "episodeNumber": 1,
+      "title": "عنوان الحلقة 1",
+      "subtitle": "محور الحلقة القصير",
+      "cliffhangerText": "جملة تشويق للحلقة التالية",
+      "youtubeTitle": "عنوان يوتيوب شورتس جذاب #Shorts",
+      "youtubeDescription": "وصف قصير ومرتب للحلقة",
+      "youtubePinnedComment": "سؤال تفاعلي للمشاهدين في التعليقات",
+      "slides": [
+        {
+          "badgeText": "...",
+          "question": "...",
+          "options": ["...", "...", "...", "..."],
+          "correctIndex": 0,
+          "explanationText": "...",
+          "explanationSource": ""
+        }
+      ]
+    }
+  ]
+}`;
+
+      type RawSeriesSlide = {
+        badgeText?: string;
+        question?: string;
+        options?: string[];
+        correctIndex?: number;
+        explanationText?: string;
+        explanationSource?: string;
+      };
+      type RawSeriesEp = {
+        episodeNumber?: number;
+        title?: string;
+        subtitle?: string;
+        cliffhangerText?: string;
+        youtubeTitle?: string;
+        youtubeDescription?: string;
+        youtubePinnedComment?: string;
+        slides?: RawSeriesSlide[];
+      };
+
+      const { data: builtSeries, provider: usedProvider, model: usedModel } =
+        await runTextJsonAcrossProviders({
+          geminiTask: async (ai, model) => {
+            const response = await ai.models.generateContent({
+              model,
+              contents: seriesPrompt,
+              config: {
+                temperature: 0.75,
+                thinkingConfig: {
+                  thinkingLevel:
+                    model === 'gemini-3.1-flash-lite'
+                      ? ThinkingLevel.MINIMAL
+                      : ThinkingLevel.LOW,
+                },
+                systemInstruction: seriesSystem,
+                responseMimeType: 'application/json',
+                responseSchema: {
+                  type: Type.OBJECT,
+                  properties: {
+                    seriesTitle: { type: Type.STRING },
+                    episodes: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          episodeNumber: { type: Type.INTEGER },
+                          title: { type: Type.STRING },
+                          subtitle: { type: Type.STRING },
+                          cliffhangerText: { type: Type.STRING },
+                          youtubeTitle: { type: Type.STRING },
+                          youtubeDescription: { type: Type.STRING },
+                          youtubePinnedComment: { type: Type.STRING },
+                          slides: {
+                            type: Type.ARRAY,
+                            items: {
+                              type: Type.OBJECT,
+                              properties: {
+                                badgeText: { type: Type.STRING },
+                                question: { type: Type.STRING },
+                                options: { type: Type.ARRAY, items: { type: Type.STRING } },
+                                correctIndex: { type: Type.INTEGER },
+                                explanationText: { type: Type.STRING },
+                                explanationSource: { type: Type.STRING },
+                              },
+                              required: ['question', 'options', 'correctIndex'],
+                            },
+                          },
+                        },
+                        required: ['episodeNumber', 'title', 'slides'],
+                      },
+                    },
+                  },
+                  required: ['seriesTitle', 'episodes'],
+                },
+              },
+            });
+            return response.text ?? '{}';
+          },
+          externalSystemInstruction: seriesSystem,
+          externalUserPrompt: seriesPrompt,
+          parseAndValidate: (payload) => {
+            const parsed = (payload && typeof payload === 'object' ? payload : {}) as {
+              seriesTitle?: string;
+              episodes?: RawSeriesEp[];
+            };
+            const rawEpisodes = Array.isArray(parsed.episodes) ? parsed.episodes : [];
+            const batchSeen = new Set<string>(avoidNormSet);
+
+            const episodes = rawEpisodes
+              .slice(0, safeEpCount)
+              .map((ep, epIdx) => {
+                const epNum = Math.max(1, Math.round(Number(ep?.episodeNumber) || epIdx + 1));
+                const rawSlides = Array.isArray(ep?.slides) ? ep.slides : [];
+                const slides = rawSlides
+                  .filter(
+                    (s) =>
+                      s &&
+                      typeof s.question === 'string' &&
+                      s.question.trim().length > 3 &&
+                      Array.isArray(s.options) &&
+                      s.options.length >= 4
+                  )
+                  .filter((s) => {
+                    const norm = normalizeQuestionForDedup(s.question!);
+                    if (!norm || batchSeen.has(norm)) return false;
+                    batchSeen.add(norm);
+                    return true;
+                  })
+                  .slice(0, safeQPerEp)
+                  .map((s, sIdx) => {
+                    const opts = s.options!.slice(0, 4).map((o) => String(o ?? '').trim()) as [
+                      string,
+                      string,
+                      string,
+                      string,
+                    ];
+                    const numIdx = Number(s.correctIndex);
+                    const cIdx = Math.max(
+                      0,
+                      Math.min(3, Math.round(Number.isFinite(numIdx) ? numIdx : 0))
+                    ) as 0 | 1 | 2 | 3;
+                    const cliffText =
+                      useCliffhanger && sIdx === Math.min(rawSlides.length, safeQPerEp) - 1
+                        ? String(ep?.cliffhangerText || '').trim()
+                        : undefined;
+                    return {
+                      id: `series-ep${epNum}-q${sIdx + 1}-${Date.now()}`,
+                      slideType: 'multiple' as const,
+                      category: safeCategory,
+                      badgeText: String(s.badgeText || `الحلقة ${epNum} · سؤال ${sIdx + 1}`).trim(),
+                      question: s.question!.trim(),
+                      options: opts,
+                      correctIndex: cIdx,
+                      explanationText: String(s.explanationText || '').trim(),
+                      explanationSource: String(s.explanationSource || '').trim() || undefined,
+                      episodeCliffhanger: cliffText || undefined,
+                    };
+                  });
+
+                return {
+                  episodeNumber: epNum,
+                  title: String(ep?.title || `${cleanTopic} — الحلقة ${epNum}`).trim(),
+                  subtitle: String(ep?.subtitle || '').trim(),
+                  cliffhangerText: String(ep?.cliffhangerText || '').trim(),
+                  youtubeTitle: String(
+                    ep?.youtubeTitle || `${cleanTopic} - الحلقة ${epNum} #Shorts`
+                  )
+                    .trim()
+                    .slice(0, 100),
+                  youtubeDescription: String(ep?.youtubeDescription || '').trim(),
+                  youtubePinnedComment: String(
+                    ep?.youtubePinnedComment || 'كم إجابة صحيحة جبت في هذه الحلقة؟ شاركنا 👇'
+                  ).trim(),
+                  slides,
+                };
+              })
+              .filter((ep) => ep.slides.length > 0);
+
+            if (episodes.length === 0) {
+              throw new Error('لم يتمكن الذكاء الاصطناعي من توليد حلقات صالحة للسلسلة.');
+            }
+            return {
+              seriesTitle: String(parsed.seriesTitle || seriesTitle || cleanTopic).trim(),
+              episodes,
+            };
+          },
+        });
+
+      res.json({ ...builtSeries, provider: usedProvider, model: usedModel });
+    } catch (err) {
+      const formatted = formatGeminiError(err, 'text');
+      res.status(formatted.status).json({
+        error: formatted.message,
+        quotaExhausted: formatted.quotaExhausted,
+      });
+    }
+  });
+
   // ============================================================================
   // AI Presenter (Tavus API v2 — Free Developer Plan, Recurring Monthly Quota)
   // ============================================================================
@@ -3133,6 +3616,101 @@ Return JSON object with fields:
 
   app.get(['/auth/youtube/callback', '/auth/youtube/callback/'], (req, res) => {
     void handleYouTubeOAuthCallback(req, res);
+  });
+
+  // ── Clawatar 3D VRM Proxy & Animation Catalog ───────────────────────────────
+  const clawatarCacheDir = path.join(os.tmpdir(), 'clawatar-vrm-cache');
+  const clawatarInflight = new Map<string, Promise<string>>();
+
+  const ALLOWED_CLAWATAR_VRM_BASE =
+    'https://huggingface.co/datasets/shuaishuaicdp/VRM/resolve/main/';
+
+  const resolveClawatarRemoteUrl = (req: express.Request): { url: string; cacheKey: string } | null => {
+    const fileParam = typeof req.query.file === 'string' ? req.query.file.trim() : '';
+    if (fileParam && /^[a-zA-Z0-9._-]+\.vrm$/i.test(fileParam)) {
+      return {
+        url: `${ALLOWED_CLAWATAR_VRM_BASE}release-human-plus-comet-v1/models/${encodeURIComponent(fileParam)}`,
+        cacheKey: fileParam,
+      };
+    }
+    const urlParam = typeof req.query.url === 'string' ? req.query.url.trim() : '';
+    if (urlParam && urlParam.startsWith(ALLOWED_CLAWATAR_VRM_BASE) && urlParam.toLowerCase().endsWith('.vrm')) {
+      const hash = createHash('sha256').update(urlParam).digest('hex').slice(0, 16);
+      const baseName = path.basename(new URL(urlParam).pathname).replace(/[^a-zA-Z0-9._-]/g, '_');
+      return {
+        url: urlParam,
+        cacheKey: `${hash}_${baseName}`,
+      };
+    }
+    return null;
+  };
+
+  const ensureClawatarVrmCached = async (remoteUrl: string, cacheKey: string): Promise<string> => {
+    await fs.promises.mkdir(clawatarCacheDir, { recursive: true });
+    const targetPath = path.join(clawatarCacheDir, cacheKey);
+    try {
+      const st = await fs.promises.stat(targetPath);
+      if (st.isFile() && st.size > 1024) {
+        return targetPath;
+      }
+    } catch {
+      // cache miss
+    }
+
+    const existing = clawatarInflight.get(cacheKey);
+    if (existing) return existing;
+
+    const task = (async () => {
+      const tmpPath = `${targetPath}.${randomBytes(4).toString('hex')}.tmp`;
+      const upstream = await fetch(remoteUrl, { redirect: 'follow' });
+      if (!upstream.ok || !upstream.body) {
+        throw new Error(`Failed to fetch VRM (${upstream.status})`);
+      }
+      const arrBuf = await upstream.arrayBuffer();
+      await fs.promises.writeFile(tmpPath, Buffer.from(arrBuf));
+      await fs.promises.rename(tmpPath, targetPath);
+      return targetPath;
+    })().finally(() => {
+      clawatarInflight.delete(cacheKey);
+    });
+
+    clawatarInflight.set(cacheKey, task);
+    return task;
+  };
+
+  app.get('/api/clawatar/vrm-proxy', async (req, res) => {
+    const resolved = resolveClawatarRemoteUrl(req);
+    if (!resolved) {
+      res.status(400).json({ error: 'Invalid VRM file or URL parameter.' });
+      return;
+    }
+    try {
+      const cachedPath = await ensureClawatarVrmCached(resolved.url, resolved.cacheKey);
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Content-Type', 'model/gltf-binary');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.sendFile(cachedPath);
+    } catch (err) {
+      res.status(502).json({
+        error: err instanceof Error ? err.message : 'Unable to fetch VRM model.',
+      });
+    }
+  });
+
+  app.get('/api/clawatar/animations', async (_req, res) => {
+    try {
+      const animDir = path.resolve(process.cwd(), 'public/animations');
+      const catalogPath = path.join(animDir, 'catalog.json');
+      const raw = await fs.promises.readFile(catalogPath, 'utf8');
+      const parsed = JSON.parse(raw) as { animations?: Array<{ id: string; file: string }> };
+      const diskFiles = new Set(await fs.promises.readdir(animDir));
+      const valid = (parsed.animations || []).filter((a) => diskFiles.has(a.file));
+      res.json({ animations: valid });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to load Clawatar animations catalog.',
+      });
+    }
   });
 
   const httpServer = http.createServer(app);

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Bot,
   Brain,
   Film,
   FolderOpen,
@@ -10,16 +11,23 @@ import {
   Palette,
   Redo2,
   SlidersHorizontal,
+  Smartphone,
   Sparkles,
   Undo2,
   Video,
   Youtube,
 } from 'lucide-react';
+import {
+  isHapticsEnabled,
+  setHapticsEnabled,
+  triggerHaptic,
+} from './utils/haptics';
 import { soundEngine } from './audio/soundEngine';
 import { AiGeneratorPanel } from './components/AiGeneratorPanel';
 import { AiPresenterStudioModal } from './components/AiPresenterStudioModal';
 import { AppLockScreen, ManageLockModal } from './components/AppLockGate';
 import { AudioTimingPanel } from './components/AudioTimingPanel';
+import { AvatarMotionPanel } from './components/AvatarMotionPanel';
 import { BulkImportPanel } from './components/BulkImportPanel';
 import { ExportVideoModal } from './components/ExportVideoModal';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -67,7 +75,7 @@ import { isAppLockEnabled } from './utils/appLock';
 import { setRootBackHandler } from './utils/androidBack';
 import { isAndroidNativeApp } from './utils/nativeDownload';
 
-type StudioTab = 'slides' | 'ai' | 'template' | 'audio' | 'import' | 'youtube';
+type StudioTab = 'slides' | 'ai' | 'avatar' | 'template' | 'audio' | 'import' | 'youtube';
 type MobileStageMode = 'compact' | 'expanded' | 'collapsed';
 type StudioUiTheme = 'darkGold' | 'midnightPro' | 'emeraldStudio' | 'lightSand';
 
@@ -207,6 +215,7 @@ export default function App() {
   const [vaultRefreshTrigger, setVaultRefreshTrigger] = useState(0);
   const [vaultTotalCount, setVaultTotalCount] = useState<number>(0);
   const [isToolsMenuOpen, setIsToolsMenuOpen] = useState(false);
+  const [hapticsEnabled, setHapticsEnabledState] = useState(() => isHapticsEnabled());
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const [showApkWebBridge, setShowApkWebBridge] = useState(() => {
@@ -289,6 +298,23 @@ export default function App() {
   }, [vaultRefreshTrigger]);
 
   useEffect(() => {
+    const onBatchProjectsUpdated = (e: Event) => {
+      const custom = e as CustomEvent<{
+        updatedIds?: string[];
+        updatedActiveTemplate?: QuizProject['template'];
+      }>;
+      const updatedIds = custom.detail?.updatedIds;
+      const nextTpl = custom.detail?.updatedActiveTemplate;
+      if (nextTpl && Array.isArray(updatedIds) && updatedIds.includes(projectRef.current.id)) {
+        setProject((prev) => ({ ...prev, template: nextTpl, updatedAt: Date.now() }));
+      }
+    };
+    window.addEventListener('quizpro-projects-batch-updated', onBatchProjectsUpdated);
+    return () =>
+      window.removeEventListener('quizpro-projects-batch-updated', onBatchProjectsUpdated);
+  }, []);
+
+  useEffect(() => {
     if (!isToolsMenuOpen) return;
     const onPointerDown = (e: PointerEvent) => {
       if (toolsMenuRef.current && !toolsMenuRef.current.contains(e.target as Node)) {
@@ -300,6 +326,7 @@ export default function App() {
   }, [isToolsMenuOpen]);
 
   const navigateToTab = useCallback((nextTab: StudioTab) => {
+    triggerHaptic('selection');
     setActiveTab((prev) => {
       if (prev !== nextTab) {
         setTabHistory((hist) => [...hist.slice(-10), prev]);
@@ -388,6 +415,7 @@ export default function App() {
 
   const handleUndo = useCallback(() => {
     if (pastRef.current.length === 0) return;
+    triggerHaptic('light');
     const prevSnapshot = pastRef.current[pastRef.current.length - 1];
     pastRef.current = pastRef.current.slice(0, -1);
     futureRef.current = [projectRef.current, ...futureRef.current].slice(0, 40);
@@ -399,6 +427,7 @@ export default function App() {
 
   const handleRedo = useCallback(() => {
     if (futureRef.current.length === 0) return;
+    triggerHaptic('light');
     const nextSnapshot = futureRef.current[0];
     futureRef.current = futureRef.current.slice(1);
     pastRef.current = [...pastRef.current.slice(-39), projectRef.current];
@@ -763,6 +792,7 @@ export default function App() {
   );
 
   const handleCycleChannelTheme = useCallback(() => {
+    triggerHaptic('selection');
     updateProject((prev) => {
       const currentIdx = STUDIO_THEME_ORDER.indexOf(prev.template.presetId);
       const nextId =
@@ -779,6 +809,7 @@ export default function App() {
   }, [updateProject]);
 
   const handleToggleAspectRatio = useCallback(() => {
+    triggerHaptic('light');
     updateProject(
       (prev) => ({
         ...prev,
@@ -794,6 +825,7 @@ export default function App() {
   const navTabs: { id: StudioTab; label: string }[] = [
     { id: 'slides', label: 'الأسئلة' },
     { id: 'ai', label: 'توليد ذكي' },
+    { id: 'avatar', label: 'تحركات الأفاتار' },
     { id: 'template', label: 'القالب والتصميم' },
     { id: 'audio', label: 'الأصوات والتوقيت' },
     { id: 'import', label: 'استيراد سريع' },
@@ -832,8 +864,8 @@ export default function App() {
           استوديو كويز برو
         </a>
 
-        {/* Zone 2: 6 single-line navigation links (Desktop / Tablet) */}
-        <nav className="hidden md:flex items-center gap-4 lg:gap-6 text-xs lg:text-sm font-semibold text-[var(--pmuted)]">
+        {/* Zone 2: 7 single-line navigation links (Desktop / Tablet) */}
+        <nav className="hidden md:flex items-center gap-3 lg:gap-5 text-xs lg:text-sm font-semibold text-[var(--pmuted)]">
           {navTabs.map((tab) => {
             const active = activeTab === tab.id;
             return (
@@ -859,6 +891,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => {
+              triggerHaptic('medium');
               try {
                 soundEngine.getContext();
               } catch {
@@ -918,7 +951,10 @@ export default function App() {
 
               <button
                 type="button"
-                onClick={() => setIsVaultOpen(true)}
+                onClick={() => {
+                  triggerHaptic('medium');
+                  setIsVaultOpen(true);
+                }}
                 title="مكتبة الذاكرة الكبرى للأسئلة والمجلدات"
                 className="flex items-center gap-1 h-7 px-1.5 sm:px-2 rounded-lg bg-[#00B050]/12 border border-[#00B050]/45 hover:border-[#00B050] text-[11px] font-bold text-[#00B050] dark:text-[#6ee7b7] cursor-pointer whitespace-nowrap"
               >
@@ -933,7 +969,10 @@ export default function App() {
 
               <button
                 type="button"
-                onClick={() => setIsAiPresenterOpen(true)}
+                onClick={() => {
+                  triggerHaptic('medium');
+                  setIsAiPresenterOpen(true);
+                }}
                 title="الراوي الذكي – AI Presenter (فيديو بشري حقيقي)"
                 className={`flex items-center gap-1 h-7 px-1.5 sm:px-2 rounded-lg border text-[11px] font-bold cursor-pointer whitespace-nowrap transition-colors ${
                   project.template.aiPresenter?.enabled
@@ -956,7 +995,10 @@ export default function App() {
 
               <button
                 type="button"
-                onClick={() => setIsProjectsOpen(true)}
+                onClick={() => {
+                  triggerHaptic('light');
+                  setIsProjectsOpen(true);
+                }}
                 title="مكتبة المشاريع المحفوظة"
                 className="flex items-center gap-1 h-7 px-2 rounded-lg bg-[var(--surface)] border border-[var(--pline)] hover:border-[#00B050] text-[11px] font-bold text-[#00B050] dark:text-[#6ee7b7] cursor-pointer whitespace-nowrap"
               >
@@ -967,7 +1009,10 @@ export default function App() {
               <div className="relative" ref={toolsMenuRef}>
                 <button
                   type="button"
-                  onClick={() => setIsToolsMenuOpen((v) => !v)}
+                  onClick={() => {
+                    triggerHaptic('light');
+                    setIsToolsMenuOpen((v) => !v);
+                  }}
                   title="الأدوات والمظهر والقفل"
                   className={`flex items-center gap-1 h-7 px-2 rounded-lg border text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap ${
                     isToolsMenuOpen
@@ -1020,6 +1065,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => {
+                        triggerHaptic('light');
                         setIsToolsMenuOpen(false);
                         setIsLockModalOpen(true);
                       }}
@@ -1027,6 +1073,31 @@ export default function App() {
                     >
                       <Lock className="w-3.5 h-3.5 text-[#00B050] shrink-0" />
                       <span>قفل الخصوصية</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = !hapticsEnabled;
+                        setHapticsEnabled(next);
+                        setHapticsEnabledState(next);
+                        if (next) triggerHaptic('selection');
+                      }}
+                      className="flex items-center justify-between gap-2 w-full px-3 py-2 rounded-lg text-xs font-semibold text-[var(--ptxt)] hover:bg-[var(--surface)] transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      <span className="flex items-center gap-2">
+                        <Smartphone className="w-3.5 h-3.5 text-[#00B050] shrink-0" />
+                        <span>اهتزاز لمسي للأزرار</span>
+                      </span>
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                          hapticsEnabled
+                            ? 'bg-[#00B050]/20 text-[#00B050] dark:text-[#6ee7b7]'
+                            : 'bg-[var(--surface)] text-[var(--pmuted)]'
+                        }`}
+                      >
+                        {hapticsEnabled ? 'مفعّل' : 'مغلق'}
+                      </span>
                     </button>
 
                     <div className="mt-1 pt-1.5 border-t border-[var(--pline)] px-2 pb-1">
@@ -1166,11 +1237,22 @@ export default function App() {
               />
             )}
 
+            {activeTab === 'avatar' && (
+              <AvatarMotionPanel
+                template={project.template}
+                onChange={(nextTemplate, immediate = true) =>
+                  updateProject((prev) => ({ ...prev, template: nextTemplate }), immediate)
+                }
+              />
+            )}
+
             {activeTab === 'template' && (
               <TemplateDesignPanel
                 template={project.template}
                 timing={project.timing}
+                audio={project.audio}
                 slides={project.slides}
+                activeProjectId={project.id}
                 aiVoiceName={project.preferredAiVoice ?? 'Kore'}
                 canUndo={canUndo}
                 canRedo={canRedo}
@@ -1182,6 +1264,9 @@ export default function App() {
                 onTimingChange={(nextTiming) =>
                   updateProject((prev) => ({ ...prev, timing: nextTiming }), true)
                 }
+                onAudioChange={(nextAudio) =>
+                  updateProject((prev) => ({ ...prev, audio: nextAudio }), true)
+                }
                 onOpenAiPresenterStudio={() => setIsAiPresenterOpen(true)}
               />
             )}
@@ -1190,11 +1275,15 @@ export default function App() {
               <AudioTimingPanel
                 audio={project.audio}
                 timing={project.timing}
+                template={project.template}
                 onAudioChange={(nextAudio) =>
                   updateProject((prev) => ({ ...prev, audio: nextAudio }), true)
                 }
                 onTimingChange={(nextTiming) =>
                   updateProject((prev) => ({ ...prev, timing: nextTiming }))
+                }
+                onTemplateChange={(nextTemplate, immediate = true) =>
+                  updateProject((prev) => ({ ...prev, template: nextTemplate }), immediate)
                 }
               />
             )}
@@ -1282,7 +1371,8 @@ export default function App() {
             isExporting={isExportOpen}
             mobileStageMode={mobileStageMode}
             onChangeMobileStageMode={setMobileStageMode}
-            onToggleSafeGuides={() =>
+            onToggleSafeGuides={() => {
+              triggerHaptic('light');
               updateProject(
                 (prev) => ({
                   ...prev,
@@ -1292,8 +1382,8 @@ export default function App() {
                   },
                 }),
                 true
-              )
-            }
+              );
+            }}
             onToggleAspectRatio={handleToggleAspectRatio}
             onCycleChannelTheme={handleCycleChannelTheme}
             onActiveSlideChange={setActiveSlideIndex}
@@ -1307,11 +1397,12 @@ export default function App() {
       {/* Native Phone Bottom Navigation Bar (< md / mobile) */}
       <nav
         aria-label="أقسام الاستوديو"
-        className="md:hidden grid grid-cols-6 border-t border-[var(--pline)] bg-[var(--panel)] shrink-0 pb-[env(safe-area-inset-bottom)]"
+        className="md:hidden grid grid-cols-7 border-t border-[var(--pline)] bg-[var(--panel)] shrink-0 pb-[env(safe-area-inset-bottom)]"
       >
         {[
           { id: 'slides', label: 'الأسئلة', icon: Layers },
           { id: 'ai', label: 'ذكاء', icon: Sparkles },
+          { id: 'avatar', label: 'الأفاتار', icon: Bot },
           { id: 'template', label: 'القالب', icon: Palette },
           { id: 'audio', label: 'الأصوات', icon: Music },
           { id: 'import', label: 'استيراد', icon: Film },
@@ -1405,6 +1496,9 @@ export default function App() {
         onVoiceChange={(voice) =>
           updateProject((prev) => ({ ...prev, preferredAiVoice: voice }), true)
         }
+        activeTemplate={project.template}
+        ytConnected={ytConnected}
+        currentProjectSlides={project.slides}
         onInsertSlides={(
           newSlides,
           mode,

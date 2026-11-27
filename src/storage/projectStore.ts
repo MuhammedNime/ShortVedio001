@@ -1,10 +1,16 @@
 import {
+  BackgroundFilterId,
   DEFAULT_TEMPLATE,
   DEFAULT_TIMING,
   DEFAULT_AUDIO,
+  ExplanationCardStyle,
+  OptionAppearEffect,
   QuestionSlide,
   QuizProject,
+  TemplateSettings,
   VideoAspectRatio,
+  applyCustomTemplateSettings,
+  applyThemeBackgroundOnly,
   createDefaultProject,
 } from '../types/quiz';
 
@@ -640,6 +646,19 @@ function sanitizeSlide(raw: Partial<QuestionSlide> | null | undefined, idx: numb
     optionImageOffsetY,
     correctIndex,
     explanationText: typeof raw?.explanationText === 'string' ? raw.explanationText : '',
+    explanationSource: typeof raw?.explanationSource === 'string' ? raw.explanationSource : undefined,
+    spokenQuestion: typeof raw?.spokenQuestion === 'string' ? raw.spokenQuestion : undefined,
+    spokenOptions: Array.isArray(raw?.spokenOptions)
+      ? ([
+          typeof raw.spokenOptions[0] === 'string' ? raw.spokenOptions[0] : '',
+          typeof raw.spokenOptions[1] === 'string' ? raw.spokenOptions[1] : '',
+          typeof raw.spokenOptions[2] === 'string' ? raw.spokenOptions[2] : '',
+          typeof raw.spokenOptions[3] === 'string' ? raw.spokenOptions[3] : '',
+        ] as [string, string, string, string])
+      : undefined,
+    spokenAnswer: typeof raw?.spokenAnswer === 'string' ? raw.spokenAnswer : undefined,
+    episodeCliffhanger:
+      typeof raw?.episodeCliffhanger === 'string' ? raw.episodeCliffhanger : undefined,
     voiceover: raw?.voiceover,
     presenterCues: Array.isArray(raw?.presenterCues) ? raw.presenterCues : undefined,
   };
@@ -735,6 +754,11 @@ export function normalizeLoadedProject(
     brandLogoSize: sanitizeNumber(mergedTemplate.brandLogoSize, DEFAULT_TEMPLATE.brandLogoSize),
     brandLogoPosition: mergedTemplate.brandLogoPosition || 'topRight',
     brandHandleText: mergedTemplate.brandHandleText ?? '',
+    brandChannelName:
+      typeof mergedTemplate.brandChannelName === 'string' ? mergedTemplate.brandChannelName : '',
+    showChannelName: mergedTemplate.showChannelName ?? true,
+    brandAccentColor:
+      typeof mergedTemplate.brandAccentColor === 'string' ? mergedTemplate.brandAccentColor : '',
     brandOpacity: sanitizeNumber(mergedTemplate.brandOpacity, DEFAULT_TEMPLATE.brandOpacity),
     showProgressCounter: mergedTemplate.showProgressCounter ?? false,
 
@@ -754,6 +778,12 @@ export function normalizeLoadedProject(
     timerUrgentPulse: mergedTemplate.timerUrgentPulse ?? true,
     timerUrgentThreshold: sanitizeNumber(mergedTemplate.timerUrgentThreshold, 3),
     timerUrgentColor: mergedTemplate.timerUrgentColor || '#EF4444',
+    timerUrgentRushBanner: Boolean(mergedTemplate.timerUrgentRushBanner),
+    timerUrgentRushText:
+      typeof mergedTemplate.timerUrgentRushText === 'string' && mergedTemplate.timerUrgentRushText.trim()
+        ? mergedTemplate.timerUrgentRushText
+        : 'الوقت ينفد! 🔥',
+    timerUrgentDoubleBeat: Boolean(mergedTemplate.timerUrgentDoubleBeat),
     timerUnitSuffix: mergedTemplate.timerUnitSuffix ?? '',
     timerOpacity: sanitizeNumber(mergedTemplate.timerOpacity, 1),
     timerBorderColor: mergedTemplate.timerBorderColor ?? '',
@@ -763,6 +793,18 @@ export function normalizeLoadedProject(
     explanationBgColor: mergedTemplate.explanationBgColor ?? '',
     explanationTextColor: mergedTemplate.explanationTextColor || '#FFFFFF',
     explanationOffsetY: sanitizeNumber(mergedTemplate.explanationOffsetY, 0),
+    explanationDuration: Math.max(0, Math.min(12, sanitizeNumber(mergedTemplate.explanationDuration, 0))),
+    explanationFontFamily:
+      mergedTemplate.explanationFontFamily === 'Cairo' ||
+      mergedTemplate.explanationFontFamily === 'Tajawal' ||
+      mergedTemplate.explanationFontFamily === 'Amiri'
+        ? mergedTemplate.explanationFontFamily
+        : 'inherit',
+    explanationFontSize: Math.max(20, Math.min(44, sanitizeNumber(mergedTemplate.explanationFontSize, 30))),
+    explanationStyle:
+      mergedTemplate.explanationStyle === 'pill' || mergedTemplate.explanationStyle === 'minimal'
+        ? (mergedTemplate.explanationStyle as ExplanationCardStyle)
+        : 'card',
     brandLogoX: sanitizeNumber(mergedTemplate.brandLogoX, 88),
     brandLogoY: sanitizeNumber(mergedTemplate.brandLogoY, 10),
     shadowIntensity: sanitizeNumber(mergedTemplate.shadowIntensity, 1),
@@ -771,7 +813,21 @@ export function normalizeLoadedProject(
     timerScale: sanitizeNumber(mergedTemplate.timerScale, 1),
     badgeScale: sanitizeNumber(mergedTemplate.badgeScale, 1),
     bgMotion: mergedTemplate.bgMotion || 'none',
+    bgFilter: ((): BackgroundFilterId => {
+      const f = mergedTemplate.bgFilter;
+      return f === 'grayscale' ||
+        f === 'warm' ||
+        f === 'sepia' ||
+        f === 'cool' ||
+        f === 'highContrast' ||
+        f === 'vintage'
+        ? f
+        : 'none';
+    })(),
+    bgFilterIntensity: Math.max(0, Math.min(1, sanitizeNumber(mergedTemplate.bgFilterIntensity, 0.85))),
+    bgFilterTarget: mergedTemplate.bgFilterTarget === 'all' ? 'all' : 'background',
     revealConfetti: mergedTemplate.revealConfetti ?? false,
+    revealShockwave: mergedTemplate.revealShockwave ?? false,
     highlightSpokenOption: mergedTemplate.highlightSpokenOption ?? false,
     showIntroHook: mergedTemplate.showIntroHook ?? false,
     introHookTemplateId: mergedTemplate.introHookTemplateId ?? DEFAULT_TEMPLATE.introHookTemplateId,
@@ -792,6 +848,25 @@ export function normalizeLoadedProject(
         : DEFAULT_TEMPLATE.prizeLadderAmounts,
     slideTransition: mergedTemplate.slideTransition || 'fade',
     optionsAppearMode: mergedTemplate.optionsAppearMode || 'stagger',
+    optionAppearEffect: ((): OptionAppearEffect => {
+      const ef = mergedTemplate.optionAppearEffect;
+      return ef === 'shake' ||
+        ef === 'zoomPunch' ||
+        ef === 'bouncePulse' ||
+        ef === 'glowFlash' ||
+        ef === 'shakeAndZoom'
+        ? ef
+        : 'none';
+    })(),
+    optionAppearEffectIntensity: Math.max(
+      0.4,
+      Math.min(1.5, sanitizeNumber(mergedTemplate.optionAppearEffectIntensity, 1))
+    ),
+    optionAppearSfx: mergedTemplate.optionAppearSfx || 'none',
+    optionAppearSfxVolume: Math.max(
+      0.1,
+      Math.min(1, sanitizeNumber(mergedTemplate.optionAppearSfxVolume, 0.45))
+    ),
     optionTextAlign: mergedTemplate.optionTextAlign || 'auto',
     optionsRtlColumns: mergedTemplate.optionsRtlColumns ?? true,
 
@@ -800,6 +875,7 @@ export function normalizeLoadedProject(
       mergedTemplate.presenterStyle === 'photoMale' ||
       mergedTemplate.presenterStyle === 'photoFemale' ||
       mergedTemplate.presenterStyle === 'stylized3d' ||
+      mergedTemplate.presenterStyle === 'clawatar3d' ||
       mergedTemplate.presenterStyle === 'customPhoto'
         ? mergedTemplate.presenterStyle
         : 'stylized3d',
@@ -1208,6 +1284,239 @@ export async function saveProjectsToLibraryBatch(projects: QuizProject[]): Promi
   } catch {
     // Ignore storage errors gracefully
   }
+}
+
+export async function applyThemeToLibraryProjectsBatch(
+  targetTemplate: Partial<TemplateSettings>,
+  scope: 'factoryOnly' | 'allProjects' | 'prefix',
+  options?: {
+    preserveChannelIdentity?: boolean;
+    preserveLayoutPositions?: boolean;
+    bgOnly?: boolean;
+    seriesPrefix?: string;
+    activeProjectId?: string;
+  }
+): Promise<{ updatedCount: number; updatedIds: string[]; updatedActiveTemplate?: TemplateSettings }> {
+  const summaries = await listProjectsFromStore();
+  if (summaries.length === 0) {
+    return { updatedCount: 0, updatedIds: [] };
+  }
+
+  const preserveChannelIdentity = options?.preserveChannelIdentity ?? true;
+  const preserveLayoutPositions = options?.preserveLayoutPositions ?? true;
+  const normalizedPrefix = (options?.seriesPrefix || '').trim();
+
+  const matching = summaries.filter((s) => {
+    if (scope === 'factoryOnly') return s.id.startsWith('factory-');
+    if (scope === 'prefix' && normalizedPrefix) {
+      return s.name.startsWith(normalizedPrefix);
+    }
+    return true;
+  });
+
+  if (matching.length === 0) {
+    return { updatedCount: 0, updatedIds: [] };
+  }
+
+  const updatedProjects: QuizProject[] = [];
+  const updatedIds: string[] = [];
+  let updatedActiveTemplate: TemplateSettings | undefined;
+  const activeId = options?.activeProjectId || (await idbGet<string>(ACTIVE_PROJECT_ID_KEY)) || '';
+
+  for (const sum of matching) {
+    try {
+      const raw = await idbGet<Partial<QuizProject>>(`${PROJECT_ITEM_PREFIX}${sum.id}`);
+      if (!raw) continue;
+      const hydrated = await hydrateProjectMedia(normalizeLoadedProject(raw));
+      const nextTemplate: TemplateSettings =
+        options?.bgOnly && targetTemplate.backgroundType === 'preset' && targetTemplate.presetId
+          ? applyThemeBackgroundOnly(hydrated.template, targetTemplate.presetId)
+          : applyCustomTemplateSettings(hydrated.template, targetTemplate, {
+              preserveChannelIdentity,
+              preserveLayoutPositions,
+            });
+      const updatedProj: QuizProject = {
+        ...hydrated,
+        template: nextTemplate,
+        updatedAt: Date.now(),
+      };
+      updatedProjects.push(updatedProj);
+      updatedIds.push(sum.id);
+      if (sum.id === activeId) {
+        updatedActiveTemplate = nextTemplate;
+      }
+    } catch {
+      // skip individual corrupt item
+    }
+  }
+
+  if (updatedProjects.length > 0) {
+    await saveProjectsToLibraryBatch(updatedProjects);
+    if (activeId && updatedActiveTemplate) {
+      const activeUpdated = updatedProjects.find((p) => p.id === activeId);
+      if (activeUpdated) {
+        const compact = await offloadProjectMediaBlobs(activeUpdated);
+        await idbSet(ACTIVE_PROJECT_KEY, compact);
+      }
+    }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('quizpro-projects-batch-updated', {
+          detail: { updatedIds, updatedActiveTemplate },
+        })
+      );
+    }
+  }
+
+  return { updatedCount: updatedProjects.length, updatedIds, updatedActiveTemplate };
+}
+
+export async function applyBrandIdentityToLibraryProjectsBatch(
+  sourceTemplate: TemplateSettings,
+  scope: 'factoryOnly' | 'allProjects' | 'prefix',
+  options?: {
+    seriesPrefix?: string;
+    activeProjectId?: string;
+    includeFonts?: boolean;
+    includeBrandColors?: boolean;
+  }
+): Promise<{ updatedCount: number; updatedIds: string[]; updatedActiveTemplate?: TemplateSettings }> {
+  const summaries = await listProjectsFromStore();
+  if (summaries.length === 0) {
+    return { updatedCount: 0, updatedIds: [] };
+  }
+
+  const normalizedPrefix = (options?.seriesPrefix || '').trim();
+  const matching = summaries.filter((s) => {
+    if (scope === 'factoryOnly') return s.id.startsWith('factory-') || s.id.startsWith('series-');
+    if (scope === 'prefix' && normalizedPrefix) {
+      return s.name.startsWith(normalizedPrefix);
+    }
+    return true;
+  });
+
+  if (matching.length === 0) {
+    return { updatedCount: 0, updatedIds: [] };
+  }
+
+  const includeFonts = options?.includeFonts ?? true;
+  const includeBrandColors = options?.includeBrandColors ?? true;
+  const updatedProjects: QuizProject[] = [];
+  const updatedIds: string[] = [];
+  let updatedActiveTemplate: TemplateSettings | undefined;
+  const activeId = options?.activeProjectId || (await idbGet<string>(ACTIVE_PROJECT_ID_KEY)) || '';
+
+  for (const sum of matching) {
+    try {
+      const raw = await idbGet<Partial<QuizProject>>(`${PROJECT_ITEM_PREFIX}${sum.id}`);
+      if (!raw) continue;
+      const hydrated = await hydrateProjectMedia(normalizeLoadedProject(raw));
+      const nextTemplate: TemplateSettings = {
+        ...hydrated.template,
+        brandLogoDataUrl: sourceTemplate.brandLogoDataUrl,
+        brandLogoName: sourceTemplate.brandLogoName,
+        brandChannelName: sourceTemplate.brandChannelName ?? '',
+        showChannelName: sourceTemplate.showChannelName ?? true,
+        brandHandleText: sourceTemplate.brandHandleText ?? '',
+        brandAccentColor: sourceTemplate.brandAccentColor ?? '',
+        brandLogoPosition: sourceTemplate.brandLogoPosition,
+        brandLogoX: sourceTemplate.brandLogoX,
+        brandLogoY: sourceTemplate.brandLogoY,
+        brandLogoSize: sourceTemplate.brandLogoSize,
+        brandLogoAnim: sourceTemplate.brandLogoAnim,
+        brandOpacity: sourceTemplate.brandOpacity,
+        ...(includeFonts
+          ? {
+              fontFamily: sourceTemplate.fontFamily,
+              explanationFontFamily: sourceTemplate.explanationFontFamily,
+            }
+          : {}),
+        ...(includeBrandColors
+          ? {
+              badgeBgColor: sourceTemplate.badgeBgColor,
+              badgeTextColor: sourceTemplate.badgeTextColor,
+              questionBorderColor: sourceTemplate.questionBorderColor,
+              optionBorderColor: sourceTemplate.optionBorderColor,
+              optionLabelBgColor: sourceTemplate.optionLabelBgColor,
+              optionLabelTextColor: sourceTemplate.optionLabelTextColor,
+              videoProgressBarColor: sourceTemplate.videoProgressBarColor,
+            }
+          : {}),
+      };
+      const updatedProj: QuizProject = {
+        ...hydrated,
+        template: nextTemplate,
+        updatedAt: Date.now(),
+      };
+      updatedProjects.push(updatedProj);
+      updatedIds.push(sum.id);
+      if (sum.id === activeId) {
+        updatedActiveTemplate = nextTemplate;
+      }
+    } catch {
+      // skip individual corrupt item
+    }
+  }
+
+  if (updatedProjects.length > 0) {
+    await saveProjectsToLibraryBatch(updatedProjects);
+    if (activeId && updatedActiveTemplate) {
+      const activeUpdated = updatedProjects.find((p) => p.id === activeId);
+      if (activeUpdated) {
+        const compact = await offloadProjectMediaBlobs(activeUpdated);
+        await idbSet(ACTIVE_PROJECT_KEY, compact);
+      }
+    }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('quizpro-projects-batch-updated', {
+          detail: { updatedIds, updatedActiveTemplate },
+        })
+      );
+    }
+  }
+
+  return { updatedCount: updatedProjects.length, updatedIds, updatedActiveTemplate };
+}
+
+export async function getAllSavedProjectQuestions(excludeProjectId?: string): Promise<
+  Array<{
+    question: string;
+    projectId: string;
+    projectName: string;
+    slideIndex: number;
+  }>
+> {
+  const summaries = await listProjectsFromStore();
+  if (summaries.length === 0) return [];
+  const out: Array<{
+    question: string;
+    projectId: string;
+    projectName: string;
+    slideIndex: number;
+  }> = [];
+
+  for (const sum of summaries) {
+    if (excludeProjectId && sum.id === excludeProjectId) continue;
+    try {
+      const raw = await idbGet<Partial<QuizProject>>(`${PROJECT_ITEM_PREFIX}${sum.id}`);
+      if (!raw || !Array.isArray(raw.slides)) continue;
+      raw.slides.forEach((sl, slideIndex) => {
+        const q = typeof sl?.question === 'string' ? sl.question.trim() : '';
+        if (q) {
+          out.push({
+            question: q,
+            projectId: sum.id,
+            projectName: raw.name || sum.name || 'حلقة محفوظة',
+            slideIndex,
+          });
+        }
+      });
+    } catch {
+      // ignore individual corrupt record
+    }
+  }
+  return out;
 }
 
 export async function clearProjectStore(): Promise<void> {

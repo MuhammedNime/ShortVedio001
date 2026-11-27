@@ -19,6 +19,7 @@ import {
   VolumeX,
 } from 'lucide-react';
 import { soundEngine } from '../audio/soundEngine';
+import { triggerHaptic } from '../utils/haptics';
 import { saveOrDownloadBlob } from '../utils/nativeDownload';
 import {
   DragTargetId,
@@ -42,8 +43,19 @@ import {
   subscribeAiPresenterFrameReady,
   syncAiPresenterPreviewVideo,
 } from '../canvas/aiPresenterMedia';
+import { preloadPresenterAssets } from '../canvas/presenterRenderer';
+import {
+  disposeQuizClawatarEngine,
+  resetQuizClawatarTimer,
+  subscribeClawatarFrameReady,
+} from '../clawatar/ClawatarEngine';
+import {
+  setClawatarDemoStateOverride,
+  setClawatarLivePlaybackState,
+} from '../clawatar/quizBridge';
 import {
   AudioSettings,
+  AvatarManualStateId,
   PresenterPoseId,
   QuestionSlide,
   TemplateSettings,
@@ -243,6 +255,8 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
     startTemplate: TemplateSettings;
   } | null>(null);
 
+  const activeSlideIndexRef = useRef(activeSlideIndex);
+  activeSlideIndexRef.current = activeSlideIndex;
   slidesRef.current = slides;
   templateRef.current = template;
   timingRef.current = timing;
@@ -267,7 +281,6 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
       syncAiPresenterPreviewVideo(t, false, s, tpl, tm, au, isMutedRef.current, true);
     }
     const nextHitboxes: StageElementHitbox[] = [];
-    const hasInteractiveOverride = Boolean(dragModeRef.current || demoPoseRef.current);
     renderQuizFrame(
       ctx,
       t,
@@ -276,14 +289,13 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
       tm,
       au,
       true,
-      hasInteractiveOverride
-        ? {
-            dragMode: dragModeRef.current,
-            activeTarget: dragModeRef.current ? activeDragTargetRef.current : null,
-            demoPresenterPose: demoPoseRef.current,
-            demoPresenterAnimClock: demoAnimClockRef.current,
-          }
-        : undefined,
+      {
+        dragMode: dragModeRef.current,
+        activeTarget: dragModeRef.current ? activeDragTargetRef.current : null,
+        demoPresenterPose: demoPoseRef.current,
+        demoPresenterAnimClock: demoAnimClockRef.current,
+        isLivePlayback: isPlayingRef.current,
+      },
       nextHitboxes
     );
     hitboxesRef.current = nextHitboxes;
@@ -340,6 +352,7 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
       preloadTemplateBackground(template, slides),
       preloadTimerVideo(),
       preloadAiPresenterMedia(template.aiPresenter),
+      preloadPresenterAssets(template, slides),
     ]).then(() => {
       const canvas = canvasRef.current;
       const ctx = canvas?.getContext('2d', { alpha: false });
@@ -365,24 +378,36 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
   }, [slides, timing, audio, template, activeSlideIndex, totalDuration]);
 
   useEffect(() => {
-    const unsubscribe = subscribeAiPresenterFrameReady(() => {
+    const redrawOnce = () => {
       if (isPlayingRef.current) return;
       const canvas = canvasRef.current;
       const ctx = canvas?.getContext('2d', { alpha: false });
       if (ctx) {
         drawPreviewFrame(ctx, timeRef.current);
       }
-    });
-    return unsubscribe;
+    };
+    const unsubAi = subscribeAiPresenterFrameReady(redrawOnce);
+    const unsubClawatar = subscribeClawatarFrameReady(redrawOnce);
+    return () => {
+      unsubAi();
+      unsubClawatar();
+    };
   }, []);
 
   useEffect(() => {
     let rafId = 0;
     const handlePresenterDemo = (ev: Event) => {
-      const detail = (ev as CustomEvent<{ pose?: PresenterPoseId }>).detail;
+      const detail = (
+        ev as CustomEvent<{
+          pose?: PresenterPoseId;
+          clawatarStateId?: AvatarManualStateId;
+        }>
+      ).detail;
       if (!detail?.pose) return;
       cancelAnimationFrame(rafId);
       demoPoseRef.current = detail.pose;
+      setClawatarDemoStateOverride(detail.clawatarStateId ?? null);
+      setClawatarLivePlaybackState(isPlayingRef.current, true);
       const startPerf = performance.now();
       const durationMs = 2600;
 
@@ -398,6 +423,8 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
           rafId = requestAnimationFrame(step);
         } else {
           demoPoseRef.current = null;
+          setClawatarDemoStateOverride(null);
+          setClawatarLivePlaybackState(isPlayingRef.current, false);
           if (ctx && !isPlayingRef.current) {
             drawPreviewFrame(ctx, timeRef.current);
           }
@@ -408,12 +435,69 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
     };
 
     window.addEventListener('shortvedio:presenter-demo', handlePresenterDemo);
+
+    const handlePreviewJumpPlay = (ev: Event) => {
+      const detail = (
+        ev as CustomEvent<{
+          phase?: 'options' | 'question' | 'timer' | 'reveal' | 'slide';
+          slideIndex?: number;
+        }>
+      ).detail;
+      const curSlides = slidesRef.current;
+      if (!curSlides || curSlides.length === 0) return;
+      const schedules = computeProjectTimeline(
+        curSlides,
+        timingRef.current,
+        audioRef.current,
+        templateRef.current
+      );
+      const targetIdx = Math.max(
+        0,
+        Math.min(schedules.length - 1, detail?.slideIndex ?? activeSlideIndexRef.current ?? 0)
+      );
+      const sched = schedules[targetIdx] ?? schedules[0];
+      if (!sched) return;
+
+      const phase = detail?.phase || 'options';
+      let targetT = sched.startTime;
+      if (phase === 'options') {
+        const opt0 = sched.tOptionStarts[0] ?? sched.tQuestionStart;
+        targetT = Math.max(0, sched.startTime + opt0 - 0.08);
+      } else if (phase === 'timer') {
+        targetT = Math.max(0, sched.startTime + sched.tThinkingStart - 0.08);
+      } else if (phase === 'reveal') {
+        targetT = Math.max(0, sched.startTime + sched.tRevealStart - 0.12);
+      }
+
+      soundEngine.unlock();
+      soundEngine.stopAllSfxAndVoice();
+      hasUserScrubbedRef.current = true;
+      forceFirstTickRef.current = true;
+      syncTimeUi(targetT);
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext('2d', { alpha: false });
+      if (ctx) {
+        drawPreviewFrame(ctx, targetT);
+      }
+      setIsPlaying(true);
+    };
+
+    window.addEventListener('shortvedio:preview-jump-play', handlePreviewJumpPlay);
     return () => {
       cancelAnimationFrame(rafId);
       demoPoseRef.current = null;
+      setClawatarLivePlaybackState(isPlayingRef.current, false);
       window.removeEventListener('shortvedio:presenter-demo', handlePresenterDemo);
+      window.removeEventListener('shortvedio:preview-jump-play', handlePreviewJumpPlay);
     };
   }, []);
+
+  // Free WebGL resources when Clawatar 3D is hidden or another presenter is selected
+  useEffect(() => {
+    if (!template.presenterEnabled || template.presenterStyle !== 'clawatar3d') {
+      disposeQuizClawatarEngine();
+    }
+  }, [template.presenterEnabled, template.presenterStyle]);
 
   const prevAiPresenterSigRef = useRef<string>('');
   useEffect(() => {
@@ -493,9 +577,11 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
 
   useEffect(() => {
     isPlayingRef.current = isPlaying;
+    setClawatarLivePlaybackState(isPlaying, Boolean(demoPoseRef.current));
     const sessionId = ++playSessionRef.current;
 
     if (!isPlaying) {
+      resetQuizClawatarTimer();
       soundEngine.stopBgMusic();
       soundEngine.stopAllSfxAndVoice();
       return;
@@ -756,6 +842,18 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
                 soundEngine.stopActiveVoice();
                 void soundEngine.playSlot(curAudio.optionEnter, undefined, undefined, undefined, false, maxDurEv);
               }
+            } else if (ev.type === 'optionAppearSfx' && ev.sfxId && ev.sfxId !== 'none') {
+              const ctx = soundEngine.getContext();
+              soundEngine.playBuiltInSfx(
+                ev.sfxId,
+                ev.sfxVolume ?? 0.45,
+                ctx,
+                ctx.destination,
+                ctx.currentTime,
+                false,
+                timingRef.current.suspenseDuration ?? 1.6,
+                maxDurEv ?? 0.85
+              );
             } else if (ev.type === 'countdownTick') {
               void soundEngine.playSlot(
                 curAudio.countdownTick,
@@ -791,6 +889,20 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
               } else {
                 soundEngine.stopActiveVoice();
                 void soundEngine.playSlot(curAudio.correctReveal, undefined, undefined, undefined, false, maxDurEv);
+              }
+            } else if (ev.type === 'explanationVoice') {
+              if (s?.voiceover?.explanation?.dataUrl && !aiVoiceOwnsAudioHere) {
+                const dur = Math.min(maxDurEv ?? 99, s.voiceover.explanation.duration || 1.5);
+                duckIfNeeded(dur);
+                void soundEngine.playClip(
+                  s.voiceover.explanation,
+                  1,
+                  undefined,
+                  undefined,
+                  undefined,
+                  'voice',
+                  maxDurEv
+                );
               }
             } else if (ev.type === 'endCardEnter') {
               if (curTemplate.endCardAudio?.dataUrl && !aiVoiceOwnsAudioHere) {
@@ -866,6 +978,8 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
       canceled = true;
       playSessionRef.current += 1;
       stopRaf?.();
+      setClawatarLivePlaybackState(false, Boolean(demoPoseRef.current));
+      resetQuizClawatarTimer();
       setCurrentTime(timeRef.current);
       pauseAllCachedAiPresenterVideos();
       soundEngine.stopBgMusic();
@@ -874,6 +988,7 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
   }, [isPlaying, onActiveSlideChange]);
 
   const handleTogglePlay = () => {
+    triggerHaptic('medium');
     void soundEngine.unlock();
     if (
       !isPlaying &&
@@ -901,6 +1016,7 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
   };
 
   const handleRestart = () => {
+    triggerHaptic('light');
     void soundEngine.unlock();
     soundEngine.stopAllSfxAndVoice();
     hasUserScrubbedRef.current = true;
@@ -916,6 +1032,7 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
   };
 
   const handlePlayCurrentSlide = () => {
+    triggerHaptic('light');
     void soundEngine.unlock();
     soundEngine.stopAllSfxAndVoice();
     const schedules = computeProjectTimeline(slides, timing, audio, template);
@@ -930,6 +1047,7 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
   };
 
   const handleStepSlide = (delta: number) => {
+    triggerHaptic('selection');
     const nextIdx = Math.max(0, Math.min(slides.length - 1, activeSlideIndex + delta));
     const schedules = computeProjectTimeline(slides, timing, audio, template);
     const sched = schedules[nextIdx];
@@ -1109,6 +1227,7 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
   };
 
   const handleToggleMute = () => {
+    triggerHaptic('light');
     void soundEngine.unlock();
     setIsMuted((prev) => {
       const next = !prev;
@@ -1125,6 +1244,7 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
   const jumpToPhase = (
     phase: 'intro' | 'question' | 'opt1' | 'opt4' | 'timer' | 'suspense' | 'reveal' | 'end'
   ) => {
+    triggerHaptic('selection');
     hasUserScrubbedRef.current = true;
     isExternallySelectedSlideRef.current = false;
     soundEngine.stopAllSfxAndVoice();
@@ -1406,6 +1526,7 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
                 <button
                   type="button"
                   onClick={() => {
+                    triggerHaptic('light');
                     setIsPlaying(false);
                     setDragMode((v) => !v);
                     setActiveDragTarget(null);
@@ -1422,11 +1543,12 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
               )}
               <button
                 type="button"
-                onClick={() =>
+                onClick={() => {
+                  triggerHaptic('light');
                   onChangeMobileStageMode(
                     mobileStageMode === 'expanded' ? 'compact' : 'expanded'
-                  )
-                }
+                  );
+                }}
                 title={mobileStageMode === 'expanded' ? 'تصغير والعودة للمحرر' : 'تكبير المعاينة'}
                 className="w-8 h-8 flex items-center justify-center rounded-lg bg-[var(--surface)] border border-[var(--pline)] text-[var(--ptxt)] cursor-pointer"
               >
@@ -1439,7 +1561,10 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
               {mobileStageMode !== 'expanded' && (
                 <button
                   type="button"
-                  onClick={() => onChangeMobileStageMode('collapsed')}
+                  onClick={() => {
+                    triggerHaptic('light');
+                    onChangeMobileStageMode('collapsed');
+                  }}
                   title="طي الشاشة لتوسيع المحرر"
                   className="w-8 h-8 flex items-center justify-center rounded-lg bg-[var(--surface)] border border-[var(--pline)] text-[var(--pmuted)] cursor-pointer"
                 >

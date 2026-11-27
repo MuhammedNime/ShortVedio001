@@ -97,6 +97,7 @@ import {
   QuizCategory,
   QuizProject,
   SlideType,
+  TemplateSettings,
   applyChannelThemePreset,
   applyStudioThemePreset,
   createDefaultProject,
@@ -109,6 +110,9 @@ interface QuestionBankVaultModalProps {
   onClose: () => void;
   voiceName: AiVoiceName;
   onVoiceChange: (voice: AiVoiceName) => void;
+  activeTemplate?: TemplateSettings;
+  ytConnected?: boolean;
+  currentProjectSlides?: QuestionSlide[];
   onInsertSlides: (
     slides: QuestionSlide[],
     mode: 'append' | 'replace',
@@ -185,6 +189,9 @@ export const QuestionBankVaultModal: React.FC<QuestionBankVaultModalProps> = ({
   onClose,
   voiceName,
   onVoiceChange,
+  activeTemplate,
+  ytConnected,
+  currentProjectSlides,
   onInsertSlides,
 }) => {
   const [folders, setFolders] = useState<BankFolder[]>([]);
@@ -2912,6 +2919,9 @@ export const QuestionBankVaultModal: React.FC<QuestionBankVaultModalProps> = ({
         }
         voiceName={voiceName}
         cloudUser={cloudUser}
+        activeTemplate={activeTemplate}
+        ytConnected={ytConnected}
+        currentProjectSlides={currentProjectSlides}
         onCreated={(msg) => {
           void loadAllData();
           setNotice(msg);

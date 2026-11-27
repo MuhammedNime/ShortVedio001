@@ -60,6 +60,8 @@ class SoundEngine {
   private activeAiVoiceGain: GainNode | null = null;
   private activeBgSource: AudioBufferSourceNode | null = null;
   private activeBgGain: GainNode | null = null;
+  private voiceAnalyser: AnalyserNode | null = null;
+  private voiceAnalyserBuf: Uint8Array<ArrayBuffer> | null = null;
 
   private getCacheForContext(ctx: BaseAudioContext): Map<string, AudioBuffer> {
     let map = this.ctxCaches.get(ctx);
@@ -128,6 +130,24 @@ class SoundEngine {
       }
       this.activeAiVoiceGain = null;
     }
+  }
+
+  public getLiveVoiceAmplitude(): number {
+    if (!this.voiceAnalyser || (!this.activeVoiceSource && !this.activeAiVoiceSource)) {
+      return 0;
+    }
+    if (!this.voiceAnalyserBuf || this.voiceAnalyserBuf.length !== this.voiceAnalyser.frequencyBinCount) {
+      this.voiceAnalyserBuf = new Uint8Array(this.voiceAnalyser.frequencyBinCount);
+    }
+    this.voiceAnalyser.getByteTimeDomainData(this.voiceAnalyserBuf);
+    let sumSq = 0;
+    const buf = this.voiceAnalyserBuf;
+    for (let i = 0; i < buf.length; i++) {
+      const v = (buf[i] - 128) / 128;
+      sumSq += v * v;
+    }
+    const rms = Math.sqrt(sumSq / Math.max(1, buf.length));
+    return Math.max(0, Math.min(1, rms * 3.4));
   }
 
   public stopActiveVoice(): void {
@@ -403,6 +423,9 @@ class SoundEngine {
       if (slide.voiceover?.answer?.dataUrl) {
         tasks.push(this.decodeDataUrl(slide.voiceover.answer.dataUrl, targetCtx));
       }
+      if (slide.voiceover?.explanation?.dataUrl) {
+        tasks.push(this.decodeDataUrl(slide.voiceover.explanation.dataUrl, targetCtx));
+      }
       slide.voiceover?.options?.forEach((clip) => {
         if (clip?.dataUrl) {
           tasks.push(this.decodeDataUrl(clip.dataUrl, targetCtx));
@@ -431,6 +454,7 @@ class SoundEngine {
       if (!s.voiceover) return s;
       const q = syncClip(s.voiceover.question);
       const ans = syncClip(s.voiceover.answer);
+      const exp = syncClip(s.voiceover.explanation);
       const opts = s.voiceover.options
         ? ([
             syncClip(s.voiceover.options[0]),
@@ -450,6 +474,7 @@ class SoundEngine {
           ...s.voiceover,
           question: q,
           answer: ans,
+          explanation: exp,
           options: opts,
         },
       };
@@ -520,7 +545,17 @@ class SoundEngine {
       }
 
       src.connect(gain);
-      gain.connect(destination);
+      if (ctx === this.ctx && (trackChannel === 'voice' || trackChannel === 'aiPresenter') && destination === ctx.destination) {
+        if (!this.voiceAnalyser) {
+          this.voiceAnalyser = ctx.createAnalyser();
+          this.voiceAnalyser.fftSize = 128;
+          this.voiceAnalyser.smoothingTimeConstant = 0.6;
+          this.voiceAnalyser.connect(ctx.destination);
+        }
+        gain.connect(this.voiceAnalyser);
+      } else {
+        gain.connect(destination);
+      }
       if (trackChannel) {
         this.trackSourceIfPreview(ctx, src, trackChannel, gain);
       }
@@ -580,7 +615,17 @@ class SoundEngine {
       gain.gain.setValueAtTime(volume, Math.max(start, start + safeDur - fadeDur));
       gain.gain.linearRampToValueAtTime(0.0001, start + safeDur);
       src.connect(gain);
-      gain.connect(dest);
+      if (ctx === this.ctx && (channel === 'voice' || channel === 'aiPresenter') && dest === ctx.destination) {
+        if (!this.voiceAnalyser) {
+          this.voiceAnalyser = ctx.createAnalyser();
+          this.voiceAnalyser.fftSize = 128;
+          this.voiceAnalyser.smoothingTimeConstant = 0.6;
+          this.voiceAnalyser.connect(ctx.destination);
+        }
+        gain.connect(this.voiceAnalyser);
+      } else {
+        gain.connect(dest);
+      }
       if (channel) {
         this.trackSourceIfPreview(ctx, src, channel, gain);
       }
@@ -1201,15 +1246,30 @@ class SoundEngine {
             timing.suspenseDuration
           );
         }
+
+        if (template.optionAppearSfx && template.optionAppearSfx !== 'none' && !sameAsPrev) {
+          this.playBuiltInSfx(
+            template.optionAppearSfx,
+            template.optionAppearSfxVolume ?? 0.45,
+            offline,
+            limiter,
+            tOpt,
+            false,
+            timing.suspenseDuration,
+            Math.max(0.1, Math.min(0.85, groupEndBoundary - tOpt - 0.02))
+          );
+        }
       }
 
       // 3. Countdown ticks: strictly bounded so ticks never overlap each other or bleed into suspense
       const totalTicks = Math.floor(sched.thinkingDuration);
       const tickBuf = lookupBuf(audio.countdownTick.customDataUrl);
+      const doubleBeat = Boolean(template.timerUrgentDoubleBeat);
       for (let sec = 0; sec < totalTicks; sec++) {
         const tTick = tThink + sec;
         const tickSecond = totalTicks - sec;
-        const nextTickOrSus = Math.min(tTick + 0.88, tSus - 0.02);
+        const isUrgentSec = tickSecond <= urgentThreshold;
+        const nextTickOrSus = Math.min(tTick + (doubleBeat && isUrgentSec ? 0.42 : 0.88), tSus - 0.02);
         this.scheduleSlotInOffline(
           offline,
           limiter,
@@ -1217,9 +1277,24 @@ class SoundEngine {
           tickBuf,
           tTick,
           Math.max(tTick + 0.08, nextTickOrSus),
-          tickSecond <= urgentThreshold,
+          isUrgentSec,
           timing.suspenseDuration
         );
+        if (doubleBeat && isUrgentSec) {
+          const tHalf = tTick + 0.5;
+          if (tHalf < tSus - 0.08) {
+            this.scheduleSlotInOffline(
+              offline,
+              limiter,
+              audio.countdownTick,
+              tickBuf,
+              tHalf,
+              Math.max(tHalf + 0.08, Math.min(tHalf + 0.42, tSus - 0.02)),
+              true,
+              timing.suspenseDuration
+            );
+          }
+        }
       }
 
       // 4. Suspense: duration-matched synth OR custom clip trimmed cleanly before reveal
@@ -1239,6 +1314,7 @@ class SoundEngine {
 
       // 5. Correct Answer Reveal: voiceover OR fanfare, strictly bounded before next slide
       const ansBuf = lookupBuf(slide?.voiceover?.answer?.dataUrl);
+      const expBuf = lookupBuf(slide?.voiceover?.explanation?.dataUrl);
       if (ansBuf) {
         voiceQueue.push({
           start: tReveal,
@@ -1257,6 +1333,19 @@ class SoundEngine {
           false,
           susDur
         );
+      }
+
+      if (expBuf) {
+        const expStart = tReveal + (ansBuf ? ansBuf.duration + 0.15 : 0.45);
+        const expMaxEnd = Math.min(totalDuration, nextSlideStart - 0.02);
+        if (expStart < expMaxEnd - 0.08) {
+          voiceQueue.push({
+            start: expStart,
+            buffer: expBuf,
+            volume: 1,
+            maxEnd: expMaxEnd,
+          });
+        }
       }
     }
 

@@ -1,4 +1,10 @@
-import { DEFAULT_TEMPLATE, TemplateSettings, TimingSettings } from '../types/quiz';
+import {
+  AudioSettings,
+  DEFAULT_TEMPLATE,
+  PresetId,
+  TemplateSettings,
+  TimingSettings,
+} from '../types/quiz';
 import { idbGet, idbSet } from './projectStore';
 
 const CUSTOM_PRESETS_KEY = 'quizpro_custom_presets_v1';
@@ -11,14 +17,202 @@ export interface CustomTemplatePreset {
   createdAt: number;
   updatedAt?: number;
   includesMedia?: boolean;
+  isFullStudioPreset?: boolean;
+  isRecurringBlueprint?: boolean;
   template: Partial<TemplateSettings>;
   timing?: TimingSettings;
+  audio?: AudioSettings;
 }
 
 export interface SaveStyleOptions {
   includeBrandAndBg?: boolean;
   timing?: TimingSettings;
+  audio?: AudioSettings;
+  isFullStudioPreset?: boolean;
+  isRecurringBlueprint?: boolean;
 }
+
+export interface FullStudioPackagePreset {
+  id: string;
+  name: string;
+  emoji: string;
+  subtitle: string;
+  accentColor: string;
+  presetId: PresetId;
+  templatePatch: Partial<TemplateSettings>;
+  timingPatch: Partial<TimingSettings>;
+  audioPatch: Partial<AudioSettings>;
+}
+
+export const FULL_STUDIO_PACKAGES: FullStudioPackagePreset[] = [
+  {
+    id: 'viral-speed-challenge',
+    name: 'باقة التحدي السريع الفيروسي',
+    emoji: '⚡',
+    subtitle: 'نيون + اهتزاز وتكبير للخيارات + إيقاع متسارع + نبضة الوقت ينفد',
+    accentColor: '#22d3ee',
+    presetId: 'neonCyber',
+    templatePatch: {
+      optionAppearEffect: 'shakeAndZoom',
+      optionAppearEffectIntensity: 1.05,
+      optionAppearSfx: 'glitchSnap',
+      optionAppearSfxVolume: 0.42,
+      timerStyle: 'circle',
+      timerUrgentPulse: true,
+      timerUrgentThreshold: 3,
+      timerUrgentRushBanner: true,
+      timerUrgentRushText: 'الوقت ينفد! 🔥',
+      timerUrgentDoubleBeat: true,
+      revealConfetti: true,
+      revealShockwave: true,
+      showLiveScoreboard: true,
+      showVideoProgressBar: true,
+      showIntroHook: true,
+      introHookDuration: 1.5,
+      introHookSfx: 'impactBoom',
+    },
+    timingPatch: {
+      thinkingDuration: 4.5,
+      optionStaggerDelay: 0.35,
+      suspenseDuration: 1.2,
+      revealHoldDuration: 2.6,
+      escalatingSpeed: true,
+      escalatingStepSeconds: 0.5,
+      escalatingMinSeconds: 2.0,
+    },
+    audioPatch: {
+      questionEnter: { sourceType: 'builtin', builtinId: 'whoosh', volume: 0.78 },
+      optionEnter: { sourceType: 'builtin', builtinId: 'softPop', volume: 0.78 },
+      countdownTick: { sourceType: 'builtin', builtinId: 'channelTick', volume: 0.72 },
+      suspense: { sourceType: 'builtin', builtinId: 'suspenseRiser', volume: 0.75 },
+      correctReveal: { sourceType: 'builtin', builtinId: 'arcadeLevelUp', volume: 0.85 },
+    },
+  },
+  {
+    id: 'islamic-heritage-calm',
+    name: 'باقة التراث والسيرة الراقية',
+    emoji: '🕌',
+    subtitle: 'أندلسي فاخر + توهج ناعم للخيارات + دليل ومعلومة + توقيت متوازن',
+    accentColor: '#eab308',
+    presetId: 'islamicAndalusian',
+    templatePatch: {
+      optionAppearEffect: 'glowFlash',
+      optionAppearEffectIntensity: 0.85,
+      optionAppearSfx: 'chime',
+      optionAppearSfxVolume: 0.32,
+      timerStyle: 'channelBox',
+      timerUrgentPulse: true,
+      timerUrgentThreshold: 2,
+      timerUrgentRushBanner: false,
+      timerUrgentDoubleBeat: false,
+      revealConfetti: false,
+      revealShockwave: true,
+      showExplanationOnReveal: true,
+      explanationStyle: 'card',
+      showLiveScoreboard: false,
+      showVideoProgressBar: true,
+      showIntroHook: true,
+      introHookDuration: 1.8,
+      introHookSfx: 'mysterySparkle',
+    },
+    timingPatch: {
+      thinkingDuration: 6.0,
+      optionStaggerDelay: 0.5,
+      suspenseDuration: 1.5,
+      revealHoldDuration: 3.6,
+      escalatingSpeed: false,
+    },
+    audioPatch: {
+      questionEnter: { sourceType: 'builtin', builtinId: 'mysterySparkle', volume: 0.62 },
+      optionEnter: { sourceType: 'builtin', builtinId: 'softPop', volume: 0.65 },
+      countdownTick: { sourceType: 'builtin', builtinId: 'tick', volume: 0.55 },
+      suspense: { sourceType: 'builtin', builtinId: 'calmPulse', volume: 0.65 },
+      correctReveal: { sourceType: 'builtin', builtinId: 'successFanfare', volume: 0.8 },
+    },
+  },
+  {
+    id: 'millionaire-arena-show',
+    name: 'باقة مسرح المليونير الكبرى',
+    emoji: '👑',
+    subtitle: 'سلم الجوائز + تكبير ارتدادي + تشويق درامي + موجة صدمة عند الفوز',
+    accentColor: '#f59e0b',
+    presetId: 'millionaire',
+    templatePatch: {
+      optionAppearEffect: 'zoomPunch',
+      optionAppearEffectIntensity: 1.0,
+      optionAppearSfx: 'click',
+      optionAppearSfxVolume: 0.48,
+      timerStyle: 'hexBadge',
+      timerUrgentPulse: true,
+      timerUrgentThreshold: 3,
+      timerUrgentRushBanner: true,
+      timerUrgentRushText: 'أجب الآن! ⏳',
+      timerUrgentDoubleBeat: true,
+      revealConfetti: true,
+      revealShockwave: true,
+      showPrizeLadder: true,
+      prizeLadderStyle: 'topStrip',
+      showIntroHook: true,
+      introHookDuration: 1.8,
+      introHookSfx: 'impactBoom',
+    },
+    timingPatch: {
+      thinkingDuration: 5.5,
+      optionStaggerDelay: 0.48,
+      suspenseDuration: 1.8,
+      revealHoldDuration: 3.2,
+      escalatingSpeed: true,
+      escalatingStepSeconds: 0.5,
+      escalatingMinSeconds: 2.5,
+    },
+    audioPatch: {
+      questionEnter: { sourceType: 'builtin', builtinId: 'impactBoom', volume: 0.72 },
+      optionEnter: { sourceType: 'builtin', builtinId: 'softPop', volume: 0.75 },
+      countdownTick: { sourceType: 'builtin', builtinId: 'channelTick', volume: 0.7 },
+      suspense: { sourceType: 'builtin', builtinId: 'suspenseRiser', volume: 0.82 },
+      correctReveal: { sourceType: 'builtin', builtinId: 'successFanfare', volume: 0.9 },
+    },
+  },
+  {
+    id: 'science-cosmic-discovery',
+    name: 'باقة العلوم والفضاء الحديثة',
+    emoji: '🌌',
+    subtitle: 'مجرة الفضاء + نبض مطاطي للخيارات + بطاقة معلومة + مؤثرات نقية',
+    accentColor: '#38bdf8',
+    presetId: 'cosmicSpace',
+    templatePatch: {
+      optionAppearEffect: 'bouncePulse',
+      optionAppearEffectIntensity: 0.95,
+      optionAppearSfx: 'softPop',
+      optionAppearSfxVolume: 0.4,
+      timerStyle: 'circle',
+      timerUrgentPulse: true,
+      timerUrgentThreshold: 3,
+      timerUrgentRushBanner: true,
+      timerUrgentRushText: 'العد التنازلي الأخير! 🚀',
+      timerUrgentDoubleBeat: false,
+      revealConfetti: true,
+      revealShockwave: true,
+      showExplanationOnReveal: true,
+      explanationStyle: 'pill',
+      showVideoProgressBar: true,
+    },
+    timingPatch: {
+      thinkingDuration: 5.0,
+      optionStaggerDelay: 0.45,
+      suspenseDuration: 1.4,
+      revealHoldDuration: 3.2,
+      escalatingSpeed: false,
+    },
+    audioPatch: {
+      questionEnter: { sourceType: 'builtin', builtinId: 'whoosh', volume: 0.72 },
+      optionEnter: { sourceType: 'builtin', builtinId: 'click', volume: 0.7 },
+      countdownTick: { sourceType: 'builtin', builtinId: 'tick', volume: 0.62 },
+      suspense: { sourceType: 'builtin', builtinId: 'mysterySparkle', volume: 0.75 },
+      correctReveal: { sourceType: 'builtin', builtinId: 'chime', volume: 0.86 },
+    },
+  },
+];
 
 function buildStyleSnapshot(
   template: TemplateSettings,
@@ -60,8 +254,11 @@ function sanitizePresetItem(raw: unknown): CustomTemplatePreset | null {
     includesMedia: Boolean(
       item.includesMedia ?? (item.template.customBgDataUrl || item.template.brandLogoDataUrl)
     ),
+    isFullStudioPreset: Boolean(item.isFullStudioPreset || item.audio),
+    isRecurringBlueprint: Boolean(item.isRecurringBlueprint),
     template: { ...item.template },
     timing: item.timing ? { ...item.timing } : undefined,
+    audio: item.audio ? { ...item.audio } : undefined,
   };
 }
 
@@ -151,8 +348,11 @@ export async function saveCustomPresetAsync(
     createdAt: Date.now(),
     updatedAt: Date.now(),
     includesMedia,
+    isFullStudioPreset: Boolean(options?.isFullStudioPreset || options?.audio),
+    isRecurringBlueprint: Boolean(options?.isRecurringBlueprint),
     template: snapshot,
     timing: options?.timing ? { ...options.timing } : undefined,
+    audio: options?.audio ? { ...options.audio } : undefined,
   };
 
   const existing = await loadCustomPresetsAsync();
@@ -174,8 +374,13 @@ export async function updateCustomPresetAsync(
       name: options?.name?.trim() || item.name,
       updatedAt: Date.now(),
       includesMedia,
+      isFullStudioPreset: Boolean(
+        options?.isFullStudioPreset ?? (options?.audio !== undefined ? true : item.isFullStudioPreset)
+      ),
+      isRecurringBlueprint: Boolean(options?.isRecurringBlueprint ?? item.isRecurringBlueprint),
       template: snapshot,
       timing: options?.timing !== undefined ? { ...options.timing } : item.timing,
+      audio: options?.audio !== undefined ? { ...options.audio } : item.audio,
     };
   });
   return await persistPresetsVault(nextList);

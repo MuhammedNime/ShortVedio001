@@ -1,5 +1,13 @@
 export type AnimationStyle = 'scale' | 'pop' | 'slideUp' | 'slideRight' | 'slideLeft' | 'fade';
 
+export type OptionAppearEffect =
+  | 'none'
+  | 'shake'
+  | 'zoomPunch'
+  | 'bouncePulse'
+  | 'glowFlash'
+  | 'shakeAndZoom';
+
 export type VideoAspectRatio = '9:16' | '16:9';
 
 export type RevealStyle =
@@ -22,7 +30,9 @@ export type TimerStyle =
   | 'digits'
   | 'none';
 
-export type TimerPlacement = 'aboveOptions' | 'centerOfOptions' | 'belowOptions' | 'free';
+export type TimerUrgentColorMode = 'instant' | 'gradual' | 'flash';
+
+export type TimerPlacement = 'aboveOptions' | 'centerOfOptions' | 'belowOptions' | 'aroundQuestion' | 'free';
 
 export type TimerVisibilityMode =
   | 'afterOptionsBeforeAnswer'
@@ -54,6 +64,17 @@ export type BoxBorderStyle =
   | 'cornerBrackets';
 
 export type BackgroundMotion = 'none' | 'slowZoom' | 'particles' | 'zoomAndParticles';
+
+export type BackgroundFilterId =
+  | 'none'
+  | 'grayscale'
+  | 'warm'
+  | 'sepia'
+  | 'cool'
+  | 'highContrast'
+  | 'vintage';
+
+export type ExplanationCardStyle = 'card' | 'pill' | 'minimal';
 
 export type PrizeLadderStyle = 'topStrip' | 'sideColumn';
 
@@ -178,7 +199,52 @@ export type ImageChallengeMode =
   | 'zoomOutReveal'
   | 'tileGridReveal';
 
-export type PresenterStyle = 'stylized3d' | 'photoMale' | 'photoFemale' | 'customPhoto';
+export type PresenterStyle = 'stylized3d' | 'clawatar3d' | 'photoMale' | 'photoFemale' | 'customPhoto';
+export type ClawatarCameraPreset = 'face' | 'portrait' | 'upperBody' | 'full' | 'meeting';
+export type ClawatarExpression = 'auto' | 'neutral' | 'happy' | 'relaxed' | 'surprised' | 'sad' | 'angry';
+export type ClawatarBgMode = 'transparent' | 'white' | 'studio' | 'sakura' | 'cyber';
+export type AvatarMotionMode = 'manualThenAuto' | 'autoSmart' | 'manualLocked';
+export type AvatarManualStateId =
+  | 'idle'
+  | 'talking'
+  | 'thinking'
+  | 'explaining'
+  | 'greeting'
+  | 'happy'
+  | 'surprised'
+  | 'confused';
+
+export interface AvatarAutoBehaviors {
+  lipSyncWithVoice?: boolean;
+  headAndHandsWhileTalking?: boolean;
+  autoAwareThinking?: boolean;
+  autoAwareCorrectReveal?: boolean;
+  autoAwareSuspense?: boolean;
+  autoAwareIntroOutro?: boolean;
+  naturalBlinkAndBreathing?: boolean;
+  autoMicroExpressions?: boolean;
+}
+
+export const DEFAULT_AVATAR_AUTO_BEHAVIORS: Required<AvatarAutoBehaviors> = {
+  lipSyncWithVoice: true,
+  headAndHandsWhileTalking: true,
+  autoAwareThinking: true,
+  autoAwareCorrectReveal: true,
+  autoAwareSuspense: true,
+  autoAwareIntroOutro: true,
+  naturalBlinkAndBreathing: true,
+  autoMicroExpressions: true,
+};
+
+export interface ClawatarPhaseActions {
+  intro?: string;
+  readingQuestion?: string;
+  readingOptions?: string;
+  thinking?: string;
+  suspense?: string;
+  reveal?: string;
+  outro?: string;
+}
 export type PresenterGender = 'male' | 'female';
 export type PresenterSkinTone = 'fair' | 'warmWheat' | 'olive' | 'tan' | 'deep';
 export type PresenterBeardStyle = 'none' | 'stubble' | 'trimmed';
@@ -286,6 +352,17 @@ export type PresetId =
   | 'goldenQuizShow'
   | 'pastelDream'
   | 'samuraiInk'
+  | 'darkCinematic'
+  | 'luxuryGold'
+  | 'scienceLab'
+  | 'natureEmerald'
+  | 'minimalClean'
+  | 'modernStudio'
+  | 'gamingArena'
+  | 'techBlue'
+  | 'bookArchive'
+  | 'mysteryVault'
+  | 'vintageClassic'
   | 'emerald'
   | 'navy'
   | 'obsidian';
@@ -330,6 +407,7 @@ export interface SlideVoiceover {
     SlideAudioClip | undefined
   ];
   answer?: SlideAudioClip;
+  explanation?: SlideAudioClip;
 }
 
 export type BrandLogoAnimation = 'none' | 'pulse' | 'float' | 'glow' | 'spin';
@@ -374,6 +452,11 @@ export interface QuestionSlide {
   optionImageOffsetY?: number; // -120..120
   correctIndex: 0 | 1 | 2 | 3;
   explanationText?: string;
+  explanationSource?: string;
+  spokenQuestion?: string;
+  spokenOptions?: [string, string, string, string];
+  spokenAnswer?: string;
+  episodeCliffhanger?: string;
   voiceover?: SlideVoiceover;
   presenterCues?: PresenterActionCue[];
 }
@@ -443,6 +526,10 @@ export interface TemplateSettings {
   optionLabelBgColor: string;
   optionLabelTextColor: string;
   optionAnim: AnimationStyle;
+  optionAppearEffect?: OptionAppearEffect;
+  optionAppearEffectIntensity?: number; // 0.4..1.5
+  optionAppearSfx?: BuiltInSfxId;
+  optionAppearSfxVolume?: number; // 0.1..1
 
   boxGloss: boolean;
   enhanceAppearance: boolean;
@@ -453,8 +540,12 @@ export interface TemplateSettings {
   timerY: number; // percentage 5..95
   timerVisibilityMode?: TimerVisibilityMode;
   timerUrgentPulse?: boolean;
-  timerUrgentThreshold?: number; // seconds 1..6
+  timerUrgentThreshold?: number; // seconds 1..8
   timerUrgentColor?: string;
+  timerUrgentColorMode?: TimerUrgentColorMode;
+  timerUrgentRushBanner?: boolean;
+  timerUrgentRushText?: string;
+  timerUrgentDoubleBeat?: boolean;
   timerUnitSuffix?: TimerUnitSuffix;
   timerOpacity?: number; // 0.2..1
   timerBorderColor?: string;
@@ -473,6 +564,10 @@ export interface TemplateSettings {
   explanationBgColor?: string;
   explanationTextColor?: string;
   explanationOffsetY?: number;
+  explanationDuration?: number; // 0 = full reveal hold, 1..10s = custom display seconds
+  explanationFontFamily?: 'inherit' | 'Cairo' | 'Tajawal' | 'Amiri';
+  explanationFontSize?: number; // 22..42 px
+  explanationStyle?: ExplanationCardStyle;
   showSafeGuides: boolean;
 
   showEndCard: boolean;
@@ -488,8 +583,16 @@ export interface TemplateSettings {
   brandLogoX?: number; // percentage 5..95 (when custom)
   brandLogoY?: number; // percentage 5..95 (when custom)
   brandHandleText: string;
+  brandChannelName?: string;
+  showChannelName?: boolean;
+  brandAccentColor?: string;
   brandOpacity: number; // 0.2..1
   showProgressCounter: boolean;
+  quizProgressStyle?: 'bar' | 'dots' | 'segments';
+  showAudioWaveform?: boolean;
+  waveformStyle?: 'bars' | 'mirrorWave' | 'pulseLine';
+  waveformColor?: string;
+  waveformPosition?: 'bottom' | 'underQuestion';
   showVideoProgressBar?: boolean;
   videoProgressBarColor?: string;
 
@@ -502,9 +605,15 @@ export interface TemplateSettings {
   timerScale?: number; // 0.5..1.8
   badgeScale?: number; // 0.6..1.8
   bgMotion?: BackgroundMotion;
+  bgFilter?: BackgroundFilterId;
+  bgFilterIntensity?: number; // 0..1
+  bgFilterTarget?: 'background' | 'all';
   revealConfetti?: boolean;
+  revealShockwave?: boolean;
   highlightSpokenOption?: boolean;
   showIntroHook?: boolean;
+  introHookStyle?: 'card' | 'channelBumper';
+  introBumperSubtitle?: string;
   introHookTemplateId?: string;
   introHookBadge?: string;
   introHookAccentColor?: string;
@@ -513,6 +622,10 @@ export interface TemplateSettings {
   introHookAudio?: SlideAudioClip;
   introHookSfx?: BuiltInSfxId;
   showEndSubscribeCta?: boolean;
+  endCtaStyle?: 'youtubeBar' | 'likeAndSubscribe' | 'commentChallenge';
+  endCommentPollText?: string;
+  dualVoiceEnabled?: boolean;
+  secondaryAiVoice?: 'Kore' | 'Puck' | 'Charon' | 'Fenrir' | 'Zephyr';
   showPrizeLadder?: boolean;
   prizeLadderStyle?: PrizeLadderStyle;
   prizeLadderTitle?: string;
@@ -550,6 +663,23 @@ export interface TemplateSettings {
   presenterBeard?: PresenterBeardStyle;
   presenterGlasses?: boolean;
   presenterCommands?: PresenterPhaseCommands;
+
+  // Clawatar 3D VRM Avatar Presenter Settings
+  clawatarModelId?: string;
+  clawatarCustomModelUrl?: string;
+  clawatarCustomModelName?: string;
+  clawatarCameraPreset?: ClawatarCameraPreset;
+  clawatarExpression?: ClawatarExpression;
+  clawatarDefaultAction?: string;
+  clawatarPhaseActions?: ClawatarPhaseActions;
+  clawatarYawDeg?: number;
+  clawatarScaleZoom?: number;
+  clawatarBgMode?: ClawatarBgMode;
+
+  // Dedicated Avatar Motion Tab Controls
+  avatarMotionMode?: AvatarMotionMode;
+  avatarManualState?: AvatarManualStateId;
+  avatarAutoBehaviors?: AvatarAutoBehaviors;
 
   endCardAudio?: SlideAudioClip;
   introFlashTeaser?: boolean;
@@ -926,6 +1056,94 @@ export const PRESET_BACKDROPS: PresetBackdropInfo[] = [
     swatchColor: '#dc2626',
   },
   {
+    id: 'darkCinematic',
+    label: 'السينمائي الداكن 🎬',
+    gradientInner: '#1f2937',
+    gradientOuter: '#05070b',
+    gradientStop: 0.72,
+    swatchColor: '#111827',
+  },
+  {
+    id: 'luxuryGold',
+    label: 'الذهبي الفخم 👑',
+    gradientInner: '#3f2e12',
+    gradientOuter: '#0c0803',
+    gradientStop: 0.74,
+    swatchColor: '#d4af37',
+  },
+  {
+    id: 'scienceLab',
+    label: 'الثيم العلمي 🔬',
+    gradientInner: '#0f3c5c',
+    gradientOuter: '#04121f',
+    gradientStop: 0.76,
+    swatchColor: '#0284c7',
+  },
+  {
+    id: 'natureEmerald',
+    label: 'الطبيعة الهادئة 🌿',
+    gradientInner: '#1c4d36',
+    gradientOuter: '#071b12',
+    gradientStop: 0.78,
+    swatchColor: '#16a34a',
+  },
+  {
+    id: 'minimalClean',
+    label: 'البسيط Minimal ◽',
+    gradientInner: '#f8fafc',
+    gradientOuter: '#e2e8f0',
+    gradientStop: 0.88,
+    swatchColor: '#f1f5f9',
+  },
+  {
+    id: 'modernStudio',
+    label: 'الحديث Modern 💠',
+    gradientInner: '#272748',
+    gradientOuter: '#0b0c18',
+    gradientStop: 0.76,
+    swatchColor: '#6366f1',
+  },
+  {
+    id: 'gamingArena',
+    label: 'الألعاب Gaming 🎮',
+    gradientInner: '#3b0764',
+    gradientOuter: '#090314',
+    gradientStop: 0.74,
+    swatchColor: '#a855f7',
+  },
+  {
+    id: 'techBlue',
+    label: 'الأزرق التقني 💻',
+    gradientInner: '#0f2b5b',
+    gradientOuter: '#030b1c',
+    gradientStop: 0.74,
+    swatchColor: '#2563eb',
+  },
+  {
+    id: 'bookArchive',
+    label: 'الورق والكتب 📚',
+    gradientInner: '#fdf6e7',
+    gradientOuter: '#dfd0b4',
+    gradientStop: 0.86,
+    swatchColor: '#f3e5c8',
+  },
+  {
+    id: 'mysteryVault',
+    label: 'الألغاز والغموض 🕵️',
+    gradientInner: '#261438',
+    gradientOuter: '#07040c',
+    gradientStop: 0.74,
+    swatchColor: '#7c3aed',
+  },
+  {
+    id: 'vintageClassic',
+    label: 'كلاسيكي Vintage 🎞️',
+    gradientInner: '#422c1d',
+    gradientOuter: '#140c07',
+    gradientStop: 0.78,
+    swatchColor: '#92400e',
+  },
+  {
     id: 'emerald',
     label: 'الزمرد الذهبي',
     src: withBasePath('src/assets/images/template_emerald_studio_1795289851480.jpg'),
@@ -1002,39 +1220,50 @@ export const CHANNEL_THEME_ORDER: ('channelSand' | 'channelNavy' | 'channelEmera
 ];
 
 export const STUDIO_THEME_ORDER: PresetId[] = [
-  'channelSand',
+  'darkCinematic',
+  'luxuryGold',
+  'tvShowGold',
+  'millionaire',
+  'goldenQuizShow',
+  'neonCyber',
+  'gamingArena',
+  'tokyoDrift',
+  'scienceLab',
+  'techBlue',
+  'stadiumArena',
+  'crimsonArena',
+  'stealthCarbon',
+  'ancientHistory',
+  'bookArchive',
+  'parchmentGold',
+  'vintageClassic',
+  'islamicAndalusian',
+  'ramadanLantern',
+  'minimalClean',
+  'modernStudio',
+  'mintEditorial',
+  'luxuryMarble',
   'quizProSignature',
+  'cosmicSpace',
+  'natureEmerald',
+  'oceanAbyss',
+  'auroraBorealis',
+  'mysteryVault',
+  'royalPurple',
+  'galacticRose',
+  'arcticCyan',
+  'sunsetCinema',
+  'desertMirage',
+  'matrixTerminal',
+  'espressoLounge',
+  'comicPop',
+  'pastelDream',
+  'samuraiInk',
+  'playfulKids',
+  'channelSand',
   'channelNavy',
   'channelEmerald',
   'channelMath',
-  'millionaire',
-  'tvShowGold',
-  'neonCyber',
-  'auroraBorealis',
-  'tokyoDrift',
-  'luxuryMarble',
-  'desertMirage',
-  'matrixTerminal',
-  'oceanAbyss',
-  'galacticRose',
-  'espressoLounge',
-  'comicPop',
-  'stealthCarbon',
-  'goldenQuizShow',
-  'pastelDream',
-  'samuraiInk',
-  'parchmentGold',
-  'playfulKids',
-  'royalPurple',
-  'arcticCyan',
-  'sunsetCinema',
-  'ramadanLantern',
-  'crimsonArena',
-  'mintEditorial',
-  'islamicAndalusian',
-  'cosmicSpace',
-  'stadiumArena',
-  'ancientHistory',
 ];
 
 export function getCanvasDimensions(template?: Pick<TemplateSettings, 'aspectRatio'>): {
@@ -1165,12 +1394,416 @@ export function applyChannelThemePreset(
   };
 }
 
+const THEME_LAYER_DEFAULTS: Partial<Record<PresetId, Partial<TemplateSettings>>> = {
+  channelSand: {
+    timerStyle: 'channelBox',
+    badgeBgColor: '#d4a73a',
+    badgeTextColor: '#000000',
+    explanationBgColor: '#1e293b',
+    explanationTextColor: '#f8fafc',
+    slideTransition: 'fade',
+    videoProgressBarColor: '#d4a73a',
+  },
+  channelNavy: {
+    timerStyle: 'channelBox',
+    badgeBgColor: '#d4a73a',
+    badgeTextColor: '#0b1230',
+    explanationBgColor: '#0f172a',
+    explanationTextColor: '#f8fafc',
+    slideTransition: 'fade',
+    videoProgressBarColor: '#d4a73a',
+  },
+  channelEmerald: {
+    timerStyle: 'channelBox',
+    badgeBgColor: '#c9a24a',
+    badgeTextColor: '#12342b',
+    explanationBgColor: '#064e3b',
+    explanationTextColor: '#ecfdf5',
+    slideTransition: 'fade',
+    videoProgressBarColor: '#c9a24a',
+  },
+  channelMath: {
+    timerStyle: 'circle',
+    badgeBgColor: '#edd6a2',
+    badgeTextColor: '#0e241d',
+    explanationBgColor: '#0b221b',
+    explanationTextColor: '#fef3c7',
+    slideTransition: 'fade',
+    videoProgressBarColor: '#edd6a2',
+  },
+  millionaire: {
+    timerStyle: 'pillCountdown',
+    badgeBgColor: '#e5b84b',
+    badgeTextColor: '#050b24',
+    explanationBgColor: '#050b24',
+    explanationTextColor: '#fef3c7',
+    slideTransition: 'wipeGold',
+    videoProgressBarColor: '#e5b84b',
+  },
+  tvShowGold: {
+    timerStyle: 'hexBadge',
+    badgeBgColor: '#facc15',
+    badgeTextColor: '#1e1b4b',
+    explanationBgColor: '#141136',
+    explanationTextColor: '#fef9c3',
+    slideTransition: 'wipeGold',
+    videoProgressBarColor: '#facc15',
+  },
+  neonCyber: {
+    timerStyle: 'neonRing',
+    badgeBgColor: '#22d3ee',
+    badgeTextColor: '#050712',
+    explanationBgColor: '#090d1f',
+    explanationTextColor: '#cffafe',
+    slideTransition: 'zoomFade',
+    videoProgressBarColor: '#22d3ee',
+  },
+  parchmentGold: {
+    timerStyle: 'hexBadge',
+    badgeBgColor: '#b58428',
+    badgeTextColor: '#FFFFFF',
+    explanationBgColor: '#3f2c14',
+    explanationTextColor: '#fef3c7',
+    slideTransition: 'fade',
+    videoProgressBarColor: '#b58428',
+  },
+  playfulKids: {
+    timerStyle: 'circle',
+    badgeBgColor: '#fde047',
+    badgeTextColor: '#0f172a',
+    explanationBgColor: '#0f172a',
+    explanationTextColor: '#fef9c3',
+    slideTransition: 'zoomFade',
+    videoProgressBarColor: '#facc15',
+  },
+  royalPurple: {
+    timerStyle: 'hexBadge',
+    badgeBgColor: '#fbbf24',
+    badgeTextColor: '#210a45',
+    explanationBgColor: '#1e0840',
+    explanationTextColor: '#fef3c7',
+    slideTransition: 'wipeGold',
+    videoProgressBarColor: '#fbbf24',
+  },
+  arcticCyan: {
+    timerStyle: 'circle',
+    badgeBgColor: '#38bdf8',
+    badgeTextColor: '#041422',
+    explanationBgColor: '#062033',
+    explanationTextColor: '#e0f2fe',
+    slideTransition: 'fade',
+    videoProgressBarColor: '#38bdf8',
+  },
+  sunsetCinema: {
+    timerStyle: 'pillCountdown',
+    badgeBgColor: '#fb923c',
+    badgeTextColor: '#1e0b1f',
+    explanationBgColor: '#250b24',
+    explanationTextColor: '#ffedd5',
+    slideTransition: 'zoomFade',
+    videoProgressBarColor: '#fb923c',
+  },
+  ramadanLantern: {
+    timerStyle: 'hexBadge',
+    badgeBgColor: '#eab308',
+    badgeTextColor: '#050f18',
+    explanationBgColor: '#071b24',
+    explanationTextColor: '#fef3c7',
+    slideTransition: 'wipeGold',
+    videoProgressBarColor: '#eab308',
+  },
+  crimsonArena: {
+    timerStyle: 'neonRing',
+    badgeBgColor: '#f43f5e',
+    badgeTextColor: '#FFFFFF',
+    explanationBgColor: '#2a070f',
+    explanationTextColor: '#ffe4e6',
+    slideTransition: 'slideLeft',
+    videoProgressBarColor: '#f43f5e',
+  },
+  mintEditorial: {
+    timerStyle: 'circle',
+    badgeBgColor: '#047857',
+    badgeTextColor: '#FFFFFF',
+    explanationBgColor: '#064e3b',
+    explanationTextColor: '#ecfdf5',
+    slideTransition: 'fade',
+    videoProgressBarColor: '#059669',
+  },
+  islamicAndalusian: {
+    timerStyle: 'hexBadge',
+    badgeBgColor: '#eab308',
+    badgeTextColor: '#0c2422',
+    explanationBgColor: '#072220',
+    explanationTextColor: '#fef3c7',
+    slideTransition: 'wipeGold',
+    videoProgressBarColor: '#eab308',
+  },
+  cosmicSpace: {
+    timerStyle: 'neonRing',
+    badgeBgColor: '#38bdf8',
+    badgeTextColor: '#071028',
+    explanationBgColor: '#071129',
+    explanationTextColor: '#e0f2fe',
+    slideTransition: 'zoomFade',
+    videoProgressBarColor: '#38bdf8',
+  },
+  stadiumArena: {
+    timerStyle: 'pillCountdown',
+    badgeBgColor: '#22c55e',
+    badgeTextColor: '#052e16',
+    explanationBgColor: '#072617',
+    explanationTextColor: '#dcfce7',
+    slideTransition: 'slideLeft',
+    videoProgressBarColor: '#22c55e',
+  },
+  ancientHistory: {
+    timerStyle: 'hexBadge',
+    badgeBgColor: '#c99742',
+    badgeTextColor: '#1f150a',
+    explanationBgColor: '#24180c',
+    explanationTextColor: '#fef3c7',
+    slideTransition: 'wipeGold',
+    videoProgressBarColor: '#d9a441',
+  },
+  quizProSignature: {
+    timerStyle: 'circle',
+    badgeBgColor: '#00B050',
+    badgeTextColor: '#FFFFFF',
+    explanationBgColor: '#062c20',
+    explanationTextColor: '#d1fae5',
+    slideTransition: 'zoomFade',
+    videoProgressBarColor: '#00B050',
+  },
+  desertMirage: {
+    timerStyle: 'pillCountdown',
+    badgeBgColor: '#f59e0b',
+    badgeTextColor: '#1f1006',
+    explanationBgColor: '#241207',
+    explanationTextColor: '#fef3c7',
+    slideTransition: 'wipeGold',
+    videoProgressBarColor: '#f59e0b',
+  },
+  matrixTerminal: {
+    timerStyle: 'neonRing',
+    badgeBgColor: '#22c55e',
+    badgeTextColor: '#020604',
+    explanationBgColor: '#031c0d',
+    explanationTextColor: '#bbf7d0',
+    slideTransition: 'slideLeft',
+    videoProgressBarColor: '#22c55e',
+  },
+  tokyoDrift: {
+    timerStyle: 'neonRing',
+    badgeBgColor: '#ec4899',
+    badgeTextColor: '#FFFFFF',
+    explanationBgColor: '#1a0633',
+    explanationTextColor: '#fce7f3',
+    slideTransition: 'slideLeft',
+    videoProgressBarColor: '#f472b6',
+  },
+  luxuryMarble: {
+    timerStyle: 'hexBadge',
+    badgeBgColor: '#c59b27',
+    badgeTextColor: '#FFFFFF',
+    explanationBgColor: '#292116',
+    explanationTextColor: '#fef3c7',
+    slideTransition: 'wipeGold',
+    videoProgressBarColor: '#c59b27',
+  },
+  oceanAbyss: {
+    timerStyle: 'circle',
+    badgeBgColor: '#06b6d4',
+    badgeTextColor: '#031520',
+    explanationBgColor: '#041a29',
+    explanationTextColor: '#cffafe',
+    slideTransition: 'fade',
+    videoProgressBarColor: '#22d3ee',
+  },
+  galacticRose: {
+    timerStyle: 'neonRing',
+    badgeBgColor: '#f472b6',
+    badgeTextColor: '#1f081d',
+    explanationBgColor: '#240921',
+    explanationTextColor: '#fce7f3',
+    slideTransition: 'zoomFade',
+    videoProgressBarColor: '#f472b6',
+  },
+  espressoLounge: {
+    timerStyle: 'circle',
+    badgeBgColor: '#d97706',
+    badgeTextColor: '#1c1008',
+    explanationBgColor: '#211309',
+    explanationTextColor: '#fef3c7',
+    slideTransition: 'fade',
+    videoProgressBarColor: '#f59e0b',
+  },
+  comicPop: {
+    timerStyle: 'circle',
+    badgeBgColor: '#facc15',
+    badgeTextColor: '#0f172a',
+    explanationBgColor: '#0f172a',
+    explanationTextColor: '#fef08a',
+    slideTransition: 'pop' as SlideTransitionStyle,
+    videoProgressBarColor: '#facc15',
+  },
+  stealthCarbon: {
+    timerStyle: 'pillCountdown',
+    badgeBgColor: '#ef4444',
+    badgeTextColor: '#FFFFFF',
+    explanationBgColor: '#18181b',
+    explanationTextColor: '#fecaca',
+    slideTransition: 'slideLeft',
+    videoProgressBarColor: '#ef4444',
+  },
+  auroraBorealis: {
+    timerStyle: 'neonRing',
+    badgeBgColor: '#2dd4bf',
+    badgeTextColor: '#061522',
+    explanationBgColor: '#071a26',
+    explanationTextColor: '#ccfbf1',
+    slideTransition: 'zoomFade',
+    videoProgressBarColor: '#2dd4bf',
+  },
+  goldenQuizShow: {
+    timerStyle: 'hexBadge',
+    badgeBgColor: '#fbbf24',
+    badgeTextColor: '#2e0914',
+    explanationBgColor: '#2b0912',
+    explanationTextColor: '#fef3c7',
+    slideTransition: 'wipeGold',
+    videoProgressBarColor: '#fbbf24',
+  },
+  pastelDream: {
+    timerStyle: 'circle',
+    badgeBgColor: '#a855f7',
+    badgeTextColor: '#FFFFFF',
+    explanationBgColor: '#3b0764',
+    explanationTextColor: '#f3e8ff',
+    slideTransition: 'fade',
+    videoProgressBarColor: '#a855f7',
+  },
+  samuraiInk: {
+    timerStyle: 'hexBadge',
+    badgeBgColor: '#dc2626',
+    badgeTextColor: '#FFFFFF',
+    explanationBgColor: '#1c1917',
+    explanationTextColor: '#fecaca',
+    slideTransition: 'slideLeft',
+    videoProgressBarColor: '#dc2626',
+  },
+};
+
 export function applyStudioThemePreset(
   current: TemplateSettings,
   presetId: PresetId
 ): TemplateSettings {
-  const next = applyStudioThemePresetInternal(current, presetId);
-  return { ...next, freeLayoutMode: false };
+  const raw = applyStudioThemePresetInternal(current, presetId);
+  const extras = THEME_LAYER_DEFAULTS[presetId];
+  const merged = extras
+    ? {
+        ...raw,
+        ...extras,
+        slideTransition:
+          extras.slideTransition && (extras.slideTransition as string) === 'pop'
+            ? 'zoomFade'
+            : extras.slideTransition || raw.slideTransition || 'fade',
+      }
+    : raw;
+  return {
+    ...merged,
+    freeLayoutMode: false,
+    // Keep the user's channel logo, handle, name, and avatar setup intact across themes
+    brandLogoDataUrl: current.brandLogoDataUrl,
+    brandLogoName: current.brandLogoName,
+    brandHandleText: current.brandHandleText,
+    brandChannelName: current.brandChannelName,
+    showChannelName: current.showChannelName,
+    brandAccentColor: current.brandAccentColor,
+    brandLogoPosition: current.brandLogoPosition,
+    brandLogoX: current.brandLogoX,
+    brandLogoY: current.brandLogoY,
+    brandLogoSize: current.brandLogoSize,
+    brandLogoAnim: current.brandLogoAnim,
+    brandOpacity: current.brandOpacity,
+  };
+}
+
+export function resetThemeToPresetOriginal(
+  current: TemplateSettings,
+  preserveBrandIdentity = true
+): TemplateSettings {
+  const base: TemplateSettings = preserveBrandIdentity
+    ? {
+        ...DEFAULT_TEMPLATE,
+        aspectRatio: current.aspectRatio,
+        brandLogoDataUrl: current.brandLogoDataUrl,
+        brandLogoName: current.brandLogoName,
+        brandHandleText: current.brandHandleText,
+        brandChannelName: current.brandChannelName,
+        showChannelName: current.showChannelName,
+        brandAccentColor: current.brandAccentColor,
+        brandLogoPosition: current.brandLogoPosition,
+        brandLogoX: current.brandLogoX,
+        brandLogoY: current.brandLogoY,
+        brandLogoSize: current.brandLogoSize,
+        brandLogoAnim: current.brandLogoAnim,
+        brandOpacity: current.brandOpacity,
+        presenterEnabled: current.presenterEnabled,
+        presenterStyle: current.presenterStyle,
+        clawatarModelId: current.clawatarModelId,
+        clawatarCustomModelUrl: current.clawatarCustomModelUrl,
+        clawatarCustomModelName: current.clawatarCustomModelName,
+        avatarMotionMode: current.avatarMotionMode,
+        avatarManualState: current.avatarManualState,
+        avatarAutoBehaviors: current.avatarAutoBehaviors,
+      }
+    : { ...DEFAULT_TEMPLATE, aspectRatio: current.aspectRatio };
+  return applyStudioThemePreset(base, current.presetId);
+}
+
+export function applyCustomTemplateSettings(
+  current: TemplateSettings,
+  customTpl: Partial<TemplateSettings>,
+  options?: {
+    preserveChannelIdentity?: boolean;
+    preserveLayoutPositions?: boolean;
+  }
+): TemplateSettings {
+  const preserveIdentity = options?.preserveChannelIdentity ?? true;
+  const preserveLayout = options?.preserveLayoutPositions ?? false;
+  const next: TemplateSettings = {
+    ...current,
+    ...customTpl,
+  };
+  if (preserveIdentity) {
+    next.brandLogoDataUrl = current.brandLogoDataUrl;
+    next.brandLogoName = current.brandLogoName;
+    next.brandHandleText = current.brandHandleText;
+    next.brandChannelName = current.brandChannelName;
+    next.showChannelName = current.showChannelName;
+    next.brandAccentColor = current.brandAccentColor;
+    next.brandLogoPosition = current.brandLogoPosition;
+    next.brandLogoX = current.brandLogoX;
+    next.brandLogoY = current.brandLogoY;
+    next.brandLogoSize = current.brandLogoSize;
+    next.brandLogoAnim = current.brandLogoAnim;
+    next.brandOpacity = current.brandOpacity;
+  }
+  if (preserveLayout) {
+    next.aspectRatio = current.aspectRatio;
+    next.questionX = current.questionX;
+    next.questionY = current.questionY;
+    next.questionWidth = current.questionWidth;
+    next.optionsX = current.optionsX;
+    next.optionsStartY = current.optionsStartY;
+    next.optionsWidth = current.optionsWidth;
+    next.timerX = current.timerX;
+    next.timerY = current.timerY;
+    next.badgeX = current.badgeX;
+    next.badgeY = current.badgeY;
+  }
+  return next;
 }
 
 function applyStudioThemePresetInternal(
@@ -2292,6 +2925,514 @@ function applyStudioThemePresetInternal(
     };
   }
 
+  if (presetId === 'darkCinematic') {
+    return {
+      ...current,
+      backgroundType: 'preset',
+      presetId: 'darkCinematic',
+      bgDimOpacity: 0.05,
+      bgMotion: 'slowZoom',
+      fontFamily: 'Cairo',
+      boxStyle: 'glass',
+      borderStyle: 'metallicSilver',
+      shadowIntensity: 1.35,
+      glowIntensity: 0.25,
+      boxGloss: true,
+      enhanceAppearance: true,
+      questionTextColor: '#F8FAFC',
+      questionBoxColor: '#0f172a',
+      questionBoxOpacity: 0.9,
+      questionBorderColor: '#94a3b8',
+      questionBorderWidth: 3,
+      questionBorderRadius: 24,
+      optionTextColor: '#F1F5F9',
+      optionBoxColor: '#111827',
+      optionBoxOpacity: 0.92,
+      optionBorderColor: '#475569',
+      optionBorderWidth: 3,
+      optionBorderRadius: 18,
+      optionLabelStyle: 'arabic',
+      optionLabelBgColor: '#e2e8f0',
+      optionLabelTextColor: '#0f172a',
+      correctColor: '#10b981',
+      wrongColor: '#ef4444',
+      revealStyle: 'highlightGlow',
+      timerStyle: 'pillCountdown',
+      timerMatchBackground: true,
+      timerBgColor: '#0f172a',
+      timerColor: '#f8fafc',
+      explanationBgColor: '#090d16',
+      explanationTextColor: '#f1f5f9',
+      badgeBgColor: '#e2e8f0',
+      badgeTextColor: '#0f172a',
+      slideTransition: 'fade',
+      videoProgressBarColor: '#94a3b8',
+      showPrizeLadder: false,
+    };
+  }
+
+  if (presetId === 'luxuryGold') {
+    return {
+      ...current,
+      backgroundType: 'preset',
+      presetId: 'luxuryGold',
+      bgDimOpacity: 0,
+      bgMotion: 'zoomAndParticles',
+      fontFamily: 'Cairo',
+      boxStyle: 'bevel3d',
+      borderStyle: 'gradientGold',
+      shadowIntensity: 1.3,
+      glowIntensity: 0.45,
+      boxGloss: true,
+      enhanceAppearance: true,
+      questionTextColor: '#FEF9C3',
+      questionBoxColor: '#1a1206',
+      questionBoxOpacity: 0.96,
+      questionBorderColor: '#d4af37',
+      questionBorderWidth: 5,
+      questionBorderRadius: 26,
+      optionTextColor: '#FFFFFF',
+      optionBoxColor: '#241908',
+      optionBoxOpacity: 0.96,
+      optionBorderColor: '#c59b27',
+      optionBorderWidth: 4,
+      optionBorderRadius: 22,
+      optionLabelStyle: 'arabic',
+      optionLabelBgColor: '#d4af37',
+      optionLabelTextColor: '#1a1206',
+      correctColor: '#00B050',
+      wrongColor: '#dc2626',
+      revealStyle: 'highlightGlow',
+      revealConfetti: true,
+      timerStyle: 'hexBadge',
+      timerMatchBackground: true,
+      timerBgColor: '#1a1206',
+      timerColor: '#fcd34d',
+      explanationBgColor: '#231807',
+      explanationTextColor: '#fef3c7',
+      badgeBgColor: '#d4af37',
+      badgeTextColor: '#1a1206',
+      slideTransition: 'wipeGold',
+      videoProgressBarColor: '#d4af37',
+      showPrizeLadder: false,
+    };
+  }
+
+  if (presetId === 'scienceLab') {
+    return {
+      ...current,
+      backgroundType: 'preset',
+      presetId: 'scienceLab',
+      bgDimOpacity: 0,
+      bgMotion: 'particles',
+      fontFamily: 'Tajawal',
+      boxStyle: 'chamfer',
+      borderStyle: 'gradientNeon',
+      shadowIntensity: 1.05,
+      glowIntensity: 0.55,
+      boxGloss: true,
+      enhanceAppearance: true,
+      questionTextColor: '#F0F9FF',
+      questionBoxColor: '#082038',
+      questionBoxOpacity: 0.94,
+      questionBorderColor: '#38bdf8',
+      questionBorderWidth: 4,
+      questionBorderRadius: 22,
+      optionTextColor: '#E0F2FE',
+      optionBoxColor: '#0b2b4a',
+      optionBoxOpacity: 0.94,
+      optionBorderColor: '#0ea5e9',
+      optionBorderWidth: 3,
+      optionBorderRadius: 18,
+      optionLabelStyle: 'numbers',
+      optionLabelBgColor: '#38bdf8',
+      optionLabelTextColor: '#04121f',
+      correctColor: '#10b981',
+      wrongColor: '#f43f5e',
+      revealStyle: 'highlightGlow',
+      timerStyle: 'circle',
+      timerMatchBackground: true,
+      timerBgColor: '#082038',
+      timerColor: '#7dd3fc',
+      explanationBgColor: '#051a2e',
+      explanationTextColor: '#bae6fd',
+      badgeBgColor: '#0ea5e9',
+      badgeTextColor: '#FFFFFF',
+      slideTransition: 'zoomFade',
+      videoProgressBarColor: '#38bdf8',
+      showPrizeLadder: false,
+    };
+  }
+
+  if (presetId === 'natureEmerald') {
+    return {
+      ...current,
+      backgroundType: 'preset',
+      presetId: 'natureEmerald',
+      bgDimOpacity: 0,
+      bgMotion: 'slowZoom',
+      fontFamily: 'Tajawal',
+      boxStyle: 'layeredCard',
+      borderStyle: 'solid',
+      shadowIntensity: 0.95,
+      glowIntensity: 0.15,
+      boxGloss: false,
+      enhanceAppearance: true,
+      questionTextColor: '#ECFDF5',
+      questionBoxColor: '#0f2f21',
+      questionBoxOpacity: 0.95,
+      questionBorderColor: '#4ade80',
+      questionBorderWidth: 4,
+      questionBorderRadius: 30,
+      optionTextColor: '#ECFDF5',
+      optionBoxColor: '#143d2b',
+      optionBoxOpacity: 0.95,
+      optionBorderColor: '#34d399',
+      optionBorderWidth: 3,
+      optionBorderRadius: 24,
+      optionLabelStyle: 'arabic',
+      optionLabelBgColor: '#4ade80',
+      optionLabelTextColor: '#052e16',
+      correctColor: '#16a34a',
+      wrongColor: '#dc2626',
+      revealStyle: 'scaleCheck',
+      timerStyle: 'circle',
+      timerMatchBackground: true,
+      timerBgColor: '#0f2f21',
+      timerColor: '#a7f3d0',
+      explanationBgColor: '#092418',
+      explanationTextColor: '#d1fae5',
+      badgeBgColor: '#22c55e',
+      badgeTextColor: '#052e16',
+      slideTransition: 'fade',
+      videoProgressBarColor: '#4ade80',
+      showPrizeLadder: false,
+    };
+  }
+
+  if (presetId === 'minimalClean') {
+    return {
+      ...current,
+      backgroundType: 'preset',
+      presetId: 'minimalClean',
+      bgDimOpacity: 0,
+      bgMotion: 'none',
+      fontFamily: 'Tajawal',
+      boxStyle: 'minimalOutline',
+      borderStyle: 'solid',
+      shadowIntensity: 0.45,
+      glowIntensity: 0,
+      boxGloss: false,
+      enhanceAppearance: true,
+      questionTextColor: '#0F172A',
+      questionBoxColor: '#FFFFFF',
+      questionBoxOpacity: 0.98,
+      questionBorderColor: '#0f172a',
+      questionBorderWidth: 3,
+      questionBorderRadius: 20,
+      optionTextColor: '#0F172A',
+      optionBoxColor: '#FFFFFF',
+      optionBoxOpacity: 0.98,
+      optionBorderColor: '#cbd5e1',
+      optionBorderWidth: 3,
+      optionBorderRadius: 16,
+      optionLabelStyle: 'numbers',
+      optionLabelBgColor: '#0f172a',
+      optionLabelTextColor: '#FFFFFF',
+      correctColor: '#16a34a',
+      wrongColor: '#dc2626',
+      revealStyle: 'redWrongGreenCorrect',
+      timerStyle: 'circle',
+      timerMatchBackground: false,
+      timerBgColor: '#0f172a',
+      timerColor: '#FFFFFF',
+      explanationBgColor: '#0f172a',
+      explanationTextColor: '#f8fafc',
+      badgeBgColor: '#0f172a',
+      badgeTextColor: '#FFFFFF',
+      slideTransition: 'fade',
+      videoProgressBarColor: '#0f172a',
+      showPrizeLadder: false,
+    };
+  }
+
+  if (presetId === 'modernStudio') {
+    return {
+      ...current,
+      backgroundType: 'preset',
+      presetId: 'modernStudio',
+      bgDimOpacity: 0,
+      bgMotion: 'slowZoom',
+      fontFamily: 'Cairo',
+      boxStyle: 'glass',
+      borderStyle: 'metallicSilver',
+      shadowIntensity: 1.1,
+      glowIntensity: 0.3,
+      boxGloss: true,
+      enhanceAppearance: true,
+      questionTextColor: '#FFFFFF',
+      questionBoxColor: '#1e1b4b',
+      questionBoxOpacity: 0.88,
+      questionBorderColor: '#818cf8',
+      questionBorderWidth: 4,
+      questionBorderRadius: 30,
+      optionTextColor: '#F8FAFC',
+      optionBoxColor: '#171936',
+      optionBoxOpacity: 0.9,
+      optionBorderColor: '#6366f1',
+      optionBorderWidth: 3,
+      optionBorderRadius: 24,
+      optionLabelStyle: 'arabic',
+      optionLabelBgColor: '#6366f1',
+      optionLabelTextColor: '#FFFFFF',
+      correctColor: '#10b981',
+      wrongColor: '#f43f5e',
+      revealStyle: 'highlightGlow',
+      timerStyle: 'pillCountdown',
+      timerMatchBackground: true,
+      timerBgColor: '#1e1b4b',
+      timerColor: '#c7d2fe',
+      explanationBgColor: '#131333',
+      explanationTextColor: '#e0e7ff',
+      badgeBgColor: '#6366f1',
+      badgeTextColor: '#FFFFFF',
+      slideTransition: 'zoomFade',
+      videoProgressBarColor: '#818cf8',
+      showPrizeLadder: false,
+    };
+  }
+
+  if (presetId === 'gamingArena') {
+    return {
+      ...current,
+      backgroundType: 'preset',
+      presetId: 'gamingArena',
+      bgDimOpacity: 0,
+      bgMotion: 'particles',
+      fontFamily: 'Cairo',
+      boxStyle: 'chamfer',
+      borderStyle: 'cornerBrackets',
+      shadowIntensity: 1.25,
+      glowIntensity: 0.85,
+      boxGloss: false,
+      enhanceAppearance: true,
+      questionTextColor: '#FFFFFF',
+      questionBoxColor: '#140929',
+      questionBoxOpacity: 0.95,
+      questionBorderColor: '#a855f7',
+      questionBorderWidth: 5,
+      questionBorderRadius: 18,
+      optionTextColor: '#FFFFFF',
+      optionBoxColor: '#1b0d38',
+      optionBoxOpacity: 0.95,
+      optionBorderColor: '#22d3ee',
+      optionBorderWidth: 4,
+      optionBorderRadius: 14,
+      optionLabelStyle: 'english',
+      optionLabelBgColor: '#a855f7',
+      optionLabelTextColor: '#FFFFFF',
+      correctColor: '#22c55e',
+      wrongColor: '#f43f5e',
+      revealStyle: 'redWrongGreenCorrect',
+      revealConfetti: true,
+      timerStyle: 'neonRing',
+      timerMatchBackground: true,
+      timerBgColor: '#140929',
+      timerColor: '#22d3ee',
+      explanationBgColor: '#1c0a3b',
+      explanationTextColor: '#f3e8ff',
+      badgeBgColor: '#a855f7',
+      badgeTextColor: '#FFFFFF',
+      slideTransition: 'slideLeft',
+      videoProgressBarColor: '#a855f7',
+      showPrizeLadder: false,
+    };
+  }
+
+  if (presetId === 'techBlue') {
+    return {
+      ...current,
+      backgroundType: 'preset',
+      presetId: 'techBlue',
+      bgDimOpacity: 0,
+      bgMotion: 'particles',
+      fontFamily: 'Tajawal',
+      boxStyle: 'broadcastBar',
+      borderStyle: 'metallicSilver',
+      shadowIntensity: 1.1,
+      glowIntensity: 0.45,
+      boxGloss: true,
+      enhanceAppearance: true,
+      questionTextColor: '#F8FAFC',
+      questionBoxColor: '#091a3d',
+      questionBoxOpacity: 0.94,
+      questionBorderColor: '#3b82f6',
+      questionBorderWidth: 4,
+      questionBorderRadius: 20,
+      optionTextColor: '#F8FAFC',
+      optionBoxColor: '#0d224f',
+      optionBoxOpacity: 0.95,
+      optionBorderColor: '#60a5fa',
+      optionBorderWidth: 3,
+      optionBorderRadius: 18,
+      optionLabelStyle: 'numbers',
+      optionLabelBgColor: '#2563eb',
+      optionLabelTextColor: '#FFFFFF',
+      correctColor: '#10b981',
+      wrongColor: '#ef4444',
+      revealStyle: 'highlightGlow',
+      timerStyle: 'circle',
+      timerMatchBackground: true,
+      timerBgColor: '#091a3d',
+      timerColor: '#93c5fd',
+      explanationBgColor: '#06122c',
+      explanationTextColor: '#dbeafe',
+      badgeBgColor: '#2563eb',
+      badgeTextColor: '#FFFFFF',
+      slideTransition: 'slideRight',
+      videoProgressBarColor: '#3b82f6',
+      showPrizeLadder: false,
+    };
+  }
+
+  if (presetId === 'bookArchive') {
+    return {
+      ...current,
+      backgroundType: 'preset',
+      presetId: 'bookArchive',
+      bgDimOpacity: 0,
+      bgMotion: 'none',
+      fontFamily: 'Amiri',
+      boxStyle: 'ticket',
+      borderStyle: 'double',
+      shadowIntensity: 0.85,
+      glowIntensity: 0,
+      boxGloss: false,
+      enhanceAppearance: true,
+      questionTextColor: '#1F2937',
+      questionBoxColor: '#fffdf7',
+      questionBoxOpacity: 0.98,
+      questionBorderColor: '#92400e',
+      questionBorderWidth: 4,
+      questionBorderRadius: 20,
+      optionTextColor: '#1F2937',
+      optionBoxColor: '#fef9ee',
+      optionBoxOpacity: 0.98,
+      optionBorderColor: '#b45309',
+      optionBorderWidth: 3,
+      optionBorderRadius: 16,
+      optionLabelStyle: 'arabic',
+      optionLabelBgColor: '#92400e',
+      optionLabelTextColor: '#FFFFFF',
+      correctColor: '#15803d',
+      wrongColor: '#b91c1c',
+      revealStyle: 'dimOthers',
+      timerStyle: 'channelBox',
+      timerMatchBackground: false,
+      timerBgColor: '#78350f',
+      timerColor: '#fef3c7',
+      explanationBgColor: '#451a03',
+      explanationTextColor: '#fef3c7',
+      badgeBgColor: '#92400e',
+      badgeTextColor: '#FFFFFF',
+      slideTransition: 'fade',
+      videoProgressBarColor: '#b45309',
+      showPrizeLadder: false,
+    };
+  }
+
+  if (presetId === 'mysteryVault') {
+    return {
+      ...current,
+      backgroundType: 'preset',
+      presetId: 'mysteryVault',
+      bgDimOpacity: 0,
+      bgMotion: 'zoomAndParticles',
+      fontFamily: 'Cairo',
+      boxStyle: 'inset',
+      borderStyle: 'gradientNeon',
+      shadowIntensity: 1.35,
+      glowIntensity: 0.55,
+      boxGloss: false,
+      enhanceAppearance: true,
+      questionTextColor: '#F5F3FF',
+      questionBoxColor: '#160b24',
+      questionBoxOpacity: 0.95,
+      questionBorderColor: '#8b5cf6',
+      questionBorderWidth: 4,
+      questionBorderRadius: 26,
+      optionTextColor: '#EDE9FE',
+      optionBoxColor: '#1e1033',
+      optionBoxOpacity: 0.95,
+      optionBorderColor: '#a78bfa',
+      optionBorderWidth: 3,
+      optionBorderRadius: 22,
+      optionLabelStyle: 'arabic',
+      optionLabelBgColor: '#7c3aed',
+      optionLabelTextColor: '#FFFFFF',
+      correctColor: '#10b981',
+      wrongColor: '#e11d48',
+      revealStyle: 'highlightGlow',
+      timerStyle: 'neonRing',
+      timerMatchBackground: true,
+      timerBgColor: '#160b24',
+      timerColor: '#ddd6fe',
+      explanationBgColor: '#140924',
+      explanationTextColor: '#ede9fe',
+      badgeBgColor: '#7c3aed',
+      badgeTextColor: '#FFFFFF',
+      slideTransition: 'zoomFade',
+      videoProgressBarColor: '#8b5cf6',
+      showPrizeLadder: false,
+    };
+  }
+
+  if (presetId === 'vintageClassic') {
+    return {
+      ...current,
+      backgroundType: 'preset',
+      presetId: 'vintageClassic',
+      bgDimOpacity: 0.04,
+      bgMotion: 'slowZoom',
+      fontFamily: 'Amiri',
+      boxStyle: 'bevel3d',
+      borderStyle: 'dashedGold',
+      shadowIntensity: 1.1,
+      glowIntensity: 0.15,
+      boxGloss: false,
+      enhanceAppearance: true,
+      questionTextColor: '#FEF3C7',
+      questionBoxColor: '#2b1b11',
+      questionBoxOpacity: 0.96,
+      questionBorderColor: '#d97706',
+      questionBorderWidth: 5,
+      questionBorderRadius: 24,
+      optionTextColor: '#FEF3C7',
+      optionBoxColor: '#362216',
+      optionBoxOpacity: 0.96,
+      optionBorderColor: '#b45309',
+      optionBorderWidth: 4,
+      optionBorderRadius: 20,
+      optionLabelStyle: 'arabic',
+      optionLabelBgColor: '#d97706',
+      optionLabelTextColor: '#1c1008',
+      correctColor: '#16a34a',
+      wrongColor: '#dc2626',
+      revealStyle: 'dimOthers',
+      timerStyle: 'hexBadge',
+      timerMatchBackground: true,
+      timerBgColor: '#2b1b11',
+      timerColor: '#fde68a',
+      explanationBgColor: '#1f130c',
+      explanationTextColor: '#fef3c7',
+      badgeBgColor: '#d97706',
+      badgeTextColor: '#1c1008',
+      slideTransition: 'fade',
+      videoProgressBarColor: '#d97706',
+      showPrizeLadder: false,
+    };
+  }
+
   const preset = PRESET_BACKDROPS.find((p) => p.id === presetId);
   return {
     ...current,
@@ -2369,6 +3510,10 @@ export const DEFAULT_TEMPLATE: TemplateSettings = {
   optionLabelBgColor: '#d4a73a',
   optionLabelTextColor: '#000000',
   optionAnim: 'pop',
+  optionAppearEffect: 'none',
+  optionAppearEffectIntensity: 1,
+  optionAppearSfx: 'none',
+  optionAppearSfxVolume: 0.45,
 
   boxGloss: true,
   enhanceAppearance: true,
@@ -2381,6 +3526,10 @@ export const DEFAULT_TEMPLATE: TemplateSettings = {
   timerUrgentPulse: true,
   timerUrgentThreshold: 3,
   timerUrgentColor: '#EF4444',
+  timerUrgentColorMode: 'instant',
+  timerUrgentRushBanner: false,
+  timerUrgentRushText: 'الوقت ينفد! 🔥',
+  timerUrgentDoubleBeat: false,
   timerUnitSuffix: '',
   timerOpacity: 1,
   timerBorderColor: '',
@@ -2399,6 +3548,10 @@ export const DEFAULT_TEMPLATE: TemplateSettings = {
   explanationBgColor: '',
   explanationTextColor: '#FFFFFF',
   explanationOffsetY: 0,
+  explanationDuration: 0,
+  explanationFontFamily: 'inherit',
+  explanationFontSize: 30,
+  explanationStyle: 'card',
   showSafeGuides: false,
 
   showEndCard: true,
@@ -2412,8 +3565,16 @@ export const DEFAULT_TEMPLATE: TemplateSettings = {
   brandLogoX: 88,
   brandLogoY: 10,
   brandHandleText: '',
+  brandChannelName: '',
+  showChannelName: true,
+  brandAccentColor: '',
   brandOpacity: 0.92,
   showProgressCounter: false,
+  quizProgressStyle: 'dots',
+  showAudioWaveform: false,
+  waveformStyle: 'bars',
+  waveformColor: '',
+  waveformPosition: 'bottom',
   showVideoProgressBar: false,
   videoProgressBarColor: '',
 
@@ -2425,9 +3586,15 @@ export const DEFAULT_TEMPLATE: TemplateSettings = {
   timerScale: 1,
   badgeScale: 1,
   bgMotion: 'none',
+  bgFilter: 'none',
+  bgFilterIntensity: 0.85,
+  bgFilterTarget: 'background',
   revealConfetti: false,
+  revealShockwave: false,
   highlightSpokenOption: false,
   showIntroHook: false,
+  introHookStyle: 'card',
+  introBumperSubtitle: 'هل يمكنك حل جميع الأسئلة؟',
   introHookTemplateId: 'smartEnough',
   introHookBadge: '',
   introHookAccentColor: '',
@@ -2435,6 +3602,10 @@ export const DEFAULT_TEMPLATE: TemplateSettings = {
   introHookDuration: 1.2,
   introHookSfx: 'whoosh',
   showEndSubscribeCta: false,
+  endCtaStyle: 'likeAndSubscribe',
+  endCommentPollText: '',
+  dualVoiceEnabled: false,
+  secondaryAiVoice: 'Puck',
   showPrizeLadder: false,
   prizeLadderStyle: 'topStrip',
   prizeLadderTitle: 'الجائزة',
@@ -2477,6 +3648,16 @@ export const DEFAULT_TEMPLATE: TemplateSettings = {
     reveal: 'auto',
     outro: 'auto',
   },
+  clawatarModelId: 'base_female.vrm',
+  clawatarCameraPreset: 'upperBody',
+  clawatarExpression: 'auto',
+  clawatarDefaultAction: 'auto',
+  clawatarYawDeg: 0,
+  clawatarScaleZoom: 1,
+  clawatarBgMode: 'transparent',
+  avatarMotionMode: 'manualThenAuto',
+  avatarManualState: 'greeting',
+  avatarAutoBehaviors: { ...DEFAULT_AVATAR_AUTO_BEHAVIORS },
 
   introFlashTeaser: false,
   introFlashHookText: '92% يغلطون في السؤال الأخير! ⚠️',
@@ -2752,11 +3933,18 @@ export function computeSlideSchedule(
   const globalAnsDur =
     revealSlot?.sourceType === 'custom' && revealSlot.customDataUrl ? revealSlot.duration ?? 0 : 0;
   const slideAnsDur = slide?.voiceover?.answer?.duration ?? 0;
+  const slideExpDur = slide?.voiceover?.explanation?.duration ?? 0;
   const ansDur = slideAnsDur > 0 ? slideAnsDur : globalAnsDur;
+  const combinedRevealAudioDur =
+    ansDur > 0 && slideExpDur > 0
+      ? ansDur + 0.15 + slideExpDur
+      : Math.max(ansDur, slideExpDur > 0 ? 0.45 + slideExpDur : 0);
 
   const baseRevealHold = Math.max(0.5, timing?.revealHoldDuration ?? 3.0);
   const revealHold =
-    auto && ansDur > 0 ? Math.max(baseRevealHold, ansDur + gap) : baseRevealHold;
+    auto && combinedRevealAudioDur > 0
+      ? Math.max(baseRevealHold, combinedRevealAudioDur + gap)
+      : baseRevealHold;
 
   const duration = tRevealStart + revealHold;
 

@@ -1,5 +1,8 @@
 import {
   AiPresenterOverlay,
+  AudioSettings,
+  AvatarManualStateId,
+  DEFAULT_AVATAR_AUTO_BEHAVIORS,
   PRESENTER_PORTRAIT_URLS,
   PresenterActionCue,
   PresenterBeardStyle,
@@ -13,12 +16,30 @@ import {
   QuestionSlide,
   SlideSchedule,
   TemplateSettings,
+  TimingSettings,
+  computeProjectTimeline,
+  getIntroHookDuration,
+  getSlidesContentDuration,
 } from '../types/quiz';
 import {
   getAiPresenterSpeechEnvelope,
   getCachedAiPresenterMedia,
   preloadAiPresenterMedia,
 } from './aiPresenterMedia';
+import { getQuizClawatarEngine } from '../clawatar/ClawatarEngine';
+import {
+  drawClawatarBackdrop,
+  prepareClawatarForExport,
+  restoreClawatarPreviewSize,
+  stepClawatarForExportFrame,
+  syncClawatarQuizPreview,
+} from '../clawatar/quizBridge';
+
+let clawatarExportMode = false;
+export function setClawatarExportMode(active: boolean): void {
+  clawatarExportMode = active;
+}
+export { prepareClawatarForExport, restoreClawatarPreviewSize, stepClawatarForExportFrame };
 
 export type PresenterPose = PresenterPoseId;
 
@@ -49,6 +70,8 @@ export interface PresenterChoreography {
   handPhase: number;
   bubbleText: string;
   activeOptionIndex?: number;
+  isLivePlayback?: boolean;
+  isDemoActive?: boolean;
 }
 
 const ENVELOPE_RATE_HZ = 40;
@@ -306,9 +329,13 @@ export async function preloadPresenterAssets(
 ): Promise<void> {
   const tasks: Promise<unknown>[] = [];
   if (template.presenterEnabled) {
-    const portraitUrl = getPresenterPortraitUrl(template);
-    if (portraitUrl) {
-      tasks.push(loadPortraitImage(portraitUrl));
+    if (template.presenterStyle === 'clawatar3d') {
+      tasks.push(prepareClawatarForExport(template));
+    } else {
+      const portraitUrl = getPresenterPortraitUrl(template);
+      if (portraitUrl) {
+        tasks.push(loadPortraitImage(portraitUrl));
+      }
     }
   }
   if (template.aiPresenter?.enabled && template.aiPresenter.mediaKey) {
@@ -470,16 +497,25 @@ export function computePresenterChoreography(
   demoOverride?: {
     forcedPose?: PresenterPose | null;
     animClock?: number;
+    isLivePlayback?: boolean;
   }
 ): PresenterChoreography {
+  const autoBehaviors = {
+    ...DEFAULT_AVATAR_AUTO_BEHAVIORS,
+    ...(template.avatarAutoBehaviors ?? {}),
+  };
+  const isLivePlayback = demoOverride?.isLivePlayback ?? true;
   const animClock = demoOverride?.animClock ?? globalTime;
-  const blinkClosed = computeBlinkState(animClock);
-  const breathe = Math.sin(animClock * 1.95);
+  const blinkClosed =
+    autoBehaviors.naturalBlinkAndBreathing !== false ? computeBlinkState(animClock) : 0;
+  const breathe =
+    autoBehaviors.naturalBlinkAndBreathing !== false ? Math.sin(animClock * 1.95) : 0;
   const expScale = clamp((template.presenterExpressiveness ?? 100) / 100, 0.2, 1.5);
   const lipSyncMode =
     template.presenterLipSyncMode ??
     (template.presenterContinuousTalk === false ? 'audioOnly' : 'audioAndReading');
-  const allowFallbackSpeech = lipSyncMode === 'audioAndReading';
+  const allowFallbackSpeech =
+    autoBehaviors.lipSyncWithVoice !== false && lipSyncMode === 'audioAndReading';
 
   let isSpeaking = false;
   let speechEnergy = 0;
@@ -619,18 +655,32 @@ export function computePresenterChoreography(
   }
 
   let autoPose = resolveDefaultPhasePose(phase);
-  if (phase === 'thinking' && schedule) {
-    const thinkingDur = Math.max(0.1, schedule.thinkingDuration);
-    const thinkingRemaining = Math.max(0, schedule.tSuspenseStart - localTime);
-    if (thinkingDur >= 3.0 && thinkingRemaining <= 1.85) {
-      autoPose = 'tapWatch';
-      defaultBubbleText = '⏳';
-    } else if (thinkingDur >= 4.2 && phaseElapsed > thinkingDur * 0.45) {
-      autoPose = 'thinkChin';
+  if (phase === 'intro' && autoBehaviors.autoAwareIntroOutro === false) {
+    autoPose = 'explain';
+  } else if (phase === 'outro' && autoBehaviors.autoAwareIntroOutro === false) {
+    autoPose = 'explain';
+  } else if (phase === 'thinking') {
+    if (autoBehaviors.autoAwareThinking === false) {
+      autoPose = 'explain';
+      defaultBubbleText = '';
+    } else if (schedule) {
+      const thinkingDur = Math.max(0.1, schedule.thinkingDuration);
+      const thinkingRemaining = Math.max(0, schedule.tSuspenseStart - localTime);
+      if (thinkingDur >= 3.0 && thinkingRemaining <= 1.85) {
+        autoPose = 'tapWatch';
+        defaultBubbleText = '⏳';
+      } else if (thinkingDur >= 4.2 && phaseElapsed > thinkingDur * 0.45) {
+        autoPose = 'thinkChin';
+      }
     }
+  } else if (phase === 'suspense' && autoBehaviors.autoAwareSuspense === false) {
+    autoPose = 'explain';
+  } else if (phase === 'reveal' && autoBehaviors.autoAwareCorrectReveal === false) {
+    autoPose = 'explain';
+    defaultBubbleText = '';
+    eyebrowLift = 0.25;
   } else if (phase === 'readingOptions' && activeOptionIndex !== undefined) {
-    // Alternate between open conversational gestures and direct option pointing on later options
-    if (activeOptionIndex % 2 === 1 && phaseElapsed > 0.3) {
+    if (autoBehaviors.headAndHandsWhileTalking !== false && activeOptionIndex % 2 === 1 && phaseElapsed > 0.3) {
       autoPose = 'pointSide';
     }
   }
@@ -642,11 +692,36 @@ export function computePresenterChoreography(
       ? resolveActiveSlideCue(slide, phase, localTime)
       : null;
 
+  const motionMode = template.avatarMotionMode || 'manualThenAuto';
+  const manualStatePoseMap: Record<AvatarManualStateId, PresenterPose> = {
+    idle: 'explain',
+    talking: 'waveSpeak',
+    thinking: 'thinkForehead',
+    explaining: 'explain',
+    greeting: 'waveSpeak',
+    happy: 'celebrate',
+    surprised: 'leanSuspense',
+    confused: 'thinkChin',
+  };
+  const manualOverridePose =
+    !demoOverride?.forcedPose &&
+    template.avatarManualState &&
+    (motionMode === 'manualLocked' || (motionMode === 'manualThenAuto' && !isLivePlayback))
+      ? manualStatePoseMap[template.avatarManualState]
+      : null;
+
   const pose: PresenterPose = demoOverride?.forcedPose
     ? demoOverride.forcedPose
-    : activeCue
-      ? activeCue.gesture
-      : stagePose;
+    : manualOverridePose
+      ? manualOverridePose
+      : activeCue
+        ? activeCue.gesture
+        : stagePose;
+
+  if (autoBehaviors.lipSyncWithVoice === false && !demoOverride?.forcedPose) {
+    isSpeaking = false;
+    speechEnergy = 0;
+  }
 
   // When demonstrating a speaking gesture live in editor, ensure lips & speech energy animate cleanly
   if (demoOverride?.forcedPose) {
@@ -658,7 +733,7 @@ export function computePresenterChoreography(
     if (silentDemoPose) {
       isSpeaking = false;
       speechEnergy = 0;
-    } else {
+    } else if (autoBehaviors.lipSyncWithVoice !== false) {
       isSpeaking = true;
       speechEnergy = syntheticSyllableWave(animClock);
     }
@@ -723,6 +798,9 @@ export function computePresenterChoreography(
     (breathe * 2.0 + (isSpeaking ? Math.sin(animClock * 10.8) * speechEnergy * 4.2 : 0)) *
     expScale;
 
+  const headMotionMult = autoBehaviors.headAndHandsWhileTalking !== false ? 1 : 0.22;
+  const microExpMult = autoBehaviors.autoMicroExpressions !== false ? 1 : 0;
+
   return {
     phase,
     pose,
@@ -731,16 +809,18 @@ export function computePresenterChoreography(
     mouthSpread,
     speechEnergy: clamp01(speechEnergy),
     blinkClosed,
-    gazeX,
-    gazeY,
-    eyebrowLift: eyebrowLift * expScale,
-    browFurrow,
+    gazeX: gazeX * microExpMult,
+    gazeY: gazeY * microExpMult,
+    eyebrowLift: eyebrowLift * expScale * microExpMult,
+    browFurrow: browFurrow * microExpMult,
     breathe,
-    headTiltRad,
-    headNodY,
+    headTiltRad: headTiltRad * headMotionMult,
+    headNodY: headNodY * headMotionMult,
     handPhase: animClock,
     bubbleText,
     activeOptionIndex,
+    isLivePlayback,
+    isDemoActive: Boolean(demoOverride?.forcedPose),
   };
 }
 
@@ -2485,6 +2565,74 @@ function drawBroadcastEqualizer(
   ctx.restore();
 }
 
+function drawClawatarHostInRect(
+  ctx: CanvasRenderingContext2D,
+  template: TemplateSettings,
+  choreo: PresenterChoreography,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  fontStack: string,
+  includeBackdrop: boolean
+): void {
+  const bgMode = template.clawatarBgMode || 'transparent';
+  if (bgMode === 'white' || (includeBackdrop && bgMode !== 'transparent')) {
+    drawClawatarBackdrop(ctx, bgMode, x, y, w, h, choreo.handPhase);
+  }
+
+  if (!clawatarExportMode) {
+    syncClawatarQuizPreview(template, choreo);
+  }
+
+  const engine = getQuizClawatarEngine();
+  const srcCanvas = engine.canvas;
+  if (engine.isReady() && srcCanvas.width > 0 && srcCanvas.height > 0) {
+    const srcAspect = srcCanvas.width / srcCanvas.height;
+    const dstAspect = w / Math.max(1, h);
+    let drawW = w;
+    let drawH = h;
+    let drawX = x;
+    let drawY = y;
+    if (dstAspect > srcAspect) {
+      drawW = h * srcAspect;
+      drawX = x + (w - drawW) / 2;
+    } else {
+      drawH = w / srcAspect;
+      drawY = y + (h - drawH) * 0.15;
+    }
+    ctx.drawImage(srcCanvas, drawX, drawY, drawW, drawH);
+    return;
+  }
+
+  // Loading / error fallback indicator while VRM downloads
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  ctx.save();
+  ctx.fillStyle = 'rgba(237, 214, 162, 0.14)';
+  ctx.beginPath();
+  ctx.arc(cx, cy - 10, Math.min(w, h) * 0.16, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#00B050';
+  ctx.lineWidth = 3;
+  const spin = choreo.handPhase * 3.5;
+  ctx.beginPath();
+  ctx.arc(cx, cy - 10, Math.min(w, h) * 0.16, spin, spin + Math.PI * 1.3);
+  ctx.stroke();
+
+  ctx.font = `700 ${Math.max(11, Math.round(w * 0.06))}px ${fontStack}`;
+  ctx.direction = 'rtl';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = engine.getError() ? '#fca5a5' : '#EDD6A2';
+  ctx.fillText(
+    engine.getError() ? 'تعذر تحميل الشخصية' : 'جارٍ تحميل Clawatar 3D...',
+    cx,
+    cy + Math.min(w, h) * 0.18
+  );
+  ctx.restore();
+}
+
 export function drawPresenterHostFrame(
   ctx: CanvasRenderingContext2D,
   template: TemplateSettings,
@@ -2539,18 +2687,26 @@ export function drawPresenterHostFrame(
             ? '#EDD6A2'
             : template.questionBorderColor || '#D4A73A';
 
+  const clawatarBg = template.clawatarBgMode || 'transparent';
+  const isClawatarTransparent = style === 'clawatar3d' && clawatarBg === 'transparent';
+  const isClawatarWhite = style === 'clawatar3d' && clawatarBg === 'white';
+
   if (shape === 'circleCam') {
     const rad = Math.min(w, h) / 2;
     ctx.save();
     ctx.beginPath();
     ctx.arc(cx, cy, rad, 0, Math.PI * 2);
-    ctx.fillStyle = '#0b1120';
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
-    ctx.shadowBlur = 22;
-    ctx.fill();
+    if (!isClawatarTransparent) {
+      ctx.fillStyle = isClawatarWhite ? '#FFFFFF' : '#0b1120';
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
+      ctx.shadowBlur = 20;
+      ctx.fill();
+    }
     ctx.clip();
 
-    if (style !== 'stylized3d' && portraitImg) {
+    if (style === 'clawatar3d') {
+      drawClawatarHostInRect(ctx, template, choreo, x, y, w, h, fontStack, true);
+    } else if (style !== 'stylized3d' && portraitImg) {
       drawStudioPhotoHost(ctx, portraitImg, template, cx, cy, rad * 2, rad * 2, choreo, false);
     } else {
       const camBg = ctx.createRadialGradient(cx, cy - rad * 0.25, rad * 0.1, cx, cy, rad);
@@ -2573,7 +2729,9 @@ export function drawPresenterHostFrame(
     ctx.save();
     drawRoundedPath(ctx, x, y, w, h, 34);
     ctx.clip();
-    if (style !== 'stylized3d' && portraitImg) {
+    if (style === 'clawatar3d') {
+      drawClawatarHostInRect(ctx, template, choreo, x, y, w, h, fontStack, false);
+    } else if (style !== 'stylized3d' && portraitImg) {
       drawStudioPhotoHost(ctx, portraitImg, template, cx, cy, w, h, choreo, true);
     } else {
       drawRealisticStudioHost(ctx, template, cx, cy, w, h, choreo, talkIntensity);
@@ -2583,14 +2741,18 @@ export function drawPresenterHostFrame(
     const radius = isHero ? 38 : 26;
     ctx.save();
     drawRoundedPath(ctx, x, y, w, h, radius);
-    ctx.fillStyle = '#091124';
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
-    ctx.shadowBlur = isHero ? 36 : 20;
-    ctx.shadowOffsetY = 8;
-    ctx.fill();
+    if (!isClawatarTransparent) {
+      ctx.fillStyle = isClawatarWhite ? '#FFFFFF' : '#091124';
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
+      ctx.shadowBlur = isHero ? 32 : 18;
+      ctx.shadowOffsetY = 8;
+      ctx.fill();
+    }
     ctx.clip();
 
-    if (style !== 'stylized3d' && portraitImg) {
+    if (style === 'clawatar3d') {
+      drawClawatarHostInRect(ctx, template, choreo, x, y, w, h, fontStack, true);
+    } else if (style !== 'stylized3d' && portraitImg) {
       drawStudioPhotoHost(ctx, portraitImg, template, cx, cy, w, h, choreo, false);
     } else {
       const studioBg = ctx.createRadialGradient(cx, cy - h * 0.15, w * 0.08, cx, cy, h * 0.8);
@@ -2600,7 +2762,6 @@ export function drawPresenterHostFrame(
       ctx.fillStyle = studioBg;
       ctx.fillRect(x, y, w, h);
 
-      // Subtle vertical broadcast studio bokeh strips
       ctx.fillStyle = 'rgba(237, 214, 162, 0.04)';
       ctx.fillRect(x + w * 0.12, y, w * 0.06, h);
       ctx.fillRect(x + w * 0.82, y, w * 0.06, h);
@@ -2608,41 +2769,63 @@ export function drawPresenterHostFrame(
       drawRealisticStudioHost(ctx, template, cx, cy, w, h, choreo, talkIntensity);
     }
 
-    const barH = isHero ? 74 : 44;
-    const barGrad = ctx.createLinearGradient(x, y + h - barH - 18, x, y + h);
-    barGrad.addColorStop(0, 'rgba(6, 10, 22, 0)');
-    barGrad.addColorStop(1, 'rgba(6, 10, 22, 0.92)');
-    ctx.fillStyle = barGrad;
-    ctx.fillRect(x, y + h - barH - 18, w, barH + 18);
-
     const pName = (template.presenterName || '').trim();
-    if (pName) {
-      ctx.font = `800 ${isHero ? 26 : 16}px ${fontStack}`;
+    if (!isClawatarTransparent) {
+      const barH = isHero ? 74 : 44;
+      const barGrad = ctx.createLinearGradient(x, y + h - barH - 18, x, y + h);
+      if (isClawatarWhite) {
+        barGrad.addColorStop(0, 'rgba(255, 255, 255, 0)');
+        barGrad.addColorStop(1, 'rgba(241, 245, 249, 0.94)');
+      } else {
+        barGrad.addColorStop(0, 'rgba(6, 10, 22, 0)');
+        barGrad.addColorStop(1, 'rgba(6, 10, 22, 0.92)');
+      }
+      ctx.fillStyle = barGrad;
+      ctx.fillRect(x, y + h - barH - 18, w, barH + 18);
+
+      if (pName) {
+        ctx.font = `800 ${isHero ? 26 : 16}px ${fontStack}`;
+        ctx.direction = 'rtl';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = isClawatarWhite ? '#0f172a' : '#FFFFFF';
+        ctx.fillText(pName, x + w - (isHero ? 26 : 14), y + h - (isHero ? 30 : 19));
+      }
+
+      drawBroadcastEqualizer(
+        ctx,
+        x + (isHero ? 28 : 14),
+        y + h - (isHero ? 30 : 19),
+        isHero ? 6 : 4,
+        choreo.isSpeaking ? Math.max(0.2, choreo.speechEnergy) : 0.08,
+        choreo.handPhase,
+        choreo.isSpeaking ? '#00B050' : isClawatarWhite ? '#0f172a' : '#EDD6A2'
+      );
+    } else if (pName) {
+      // Subtle floating name pill for transparent Clawatar card
+      ctx.font = `800 ${isHero ? 22 : 14}px ${fontStack}`;
       ctx.direction = 'rtl';
-      ctx.textAlign = 'right';
+      ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+      const pillW = Math.min(w - 20, Math.max(96, pName.length * 14 + 28));
+      const pillH = isHero ? 36 : 26;
+      drawRoundedPath(ctx, cx - pillW / 2, y + h - pillH - 10, pillW, pillH, pillH / 2);
+      ctx.fill();
       ctx.fillStyle = '#FFFFFF';
-      ctx.fillText(pName, x + w - (isHero ? 26 : 14), y + h - (isHero ? 30 : 19));
+      ctx.fillText(pName, cx, y + h - pillH / 2 - 10);
     }
 
-    drawBroadcastEqualizer(
-      ctx,
-      x + (isHero ? 28 : 14),
-      y + h - (isHero ? 30 : 19),
-      isHero ? 6 : 4,
-      choreo.isSpeaking ? Math.max(0.2, choreo.speechEnergy) : 0.08,
-      choreo.handPhase,
-      choreo.isSpeaking ? '#00B050' : '#EDD6A2'
-    );
-
     ctx.restore();
 
-    ctx.save();
-    drawRoundedPath(ctx, x, y, w, h, radius);
-    ctx.strokeStyle = accentRingColor;
-    ctx.lineWidth = isHero ? 4.5 : choreo.isSpeaking ? 4 : 3;
-    ctx.stroke();
-    ctx.restore();
+    if (!isClawatarTransparent) {
+      ctx.save();
+      drawRoundedPath(ctx, x, y, w, h, radius);
+      ctx.strokeStyle = accentRingColor;
+      ctx.lineWidth = isHero ? 4.5 : choreo.isSpeaking ? 4 : 3;
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   if (template.presenterStudioMic !== false && shape !== 'circleCam') {
@@ -2996,3 +3179,73 @@ export function drawAiPresenterVideoFrame(
 
   ctx.restore();
 }
+
+export async function stepClawatarAtGlobalTime(
+  globalTime: number,
+  dt: number,
+  slides: QuestionSlide[],
+  template: TemplateSettings,
+  timing: TimingSettings,
+  audio: AudioSettings
+): Promise<void> {
+  if (!template.presenterEnabled || template.presenterStyle !== 'clawatar3d') {
+    return;
+  }
+
+  const introDur = getIntroHookDuration(template, timing);
+  const contentEnd = getSlidesContentDuration(slides, timing, audio, template);
+
+  let choreo: PresenterChoreography;
+  if (introDur > 0 && globalTime < introDur) {
+    choreo = computePresenterChoreography(globalTime, template, 'intro', globalTime);
+  } else if (globalTime >= contentEnd) {
+    choreo = computePresenterChoreography(
+      globalTime,
+      template,
+      'outro',
+      Math.max(0, globalTime - contentEnd)
+    );
+  } else {
+    const schedules = computeProjectTimeline(slides, timing, audio, template);
+    let activeIdx = 0;
+    for (let i = 0; i < schedules.length; i++) {
+      if (globalTime >= schedules[i].startTime) {
+        activeIdx = i;
+      }
+    }
+    const sched = schedules[activeIdx];
+    const slide = slides[activeIdx];
+    if (sched && slide) {
+      const localTime = Math.max(0, globalTime - sched.startTime);
+      let phase: PresenterPhase = 'readingQuestion';
+      let phaseElapsed = Math.max(0, localTime - sched.tQuestionStart);
+      if (localTime >= sched.tRevealStart) {
+        phase = 'reveal';
+        phaseElapsed = localTime - sched.tRevealStart;
+      } else if (localTime >= sched.tSuspenseStart) {
+        phase = 'suspense';
+        phaseElapsed = localTime - sched.tSuspenseStart;
+      } else if (localTime >= sched.tThinkingStart) {
+        phase = 'thinking';
+        phaseElapsed = localTime - sched.tThinkingStart;
+      } else if (localTime >= (sched.tOptionStarts[0] ?? sched.tThinkingStart)) {
+        phase = 'readingOptions';
+        phaseElapsed = localTime - (sched.tOptionStarts[0] ?? sched.tThinkingStart);
+      }
+      choreo = computePresenterChoreography(
+        globalTime,
+        template,
+        phase,
+        phaseElapsed,
+        slide,
+        sched,
+        localTime
+      );
+    } else {
+      choreo = computePresenterChoreography(globalTime, template, 'readingQuestion', 0);
+    }
+  }
+
+  await stepClawatarForExportFrame(template, choreo, dt);
+}
+

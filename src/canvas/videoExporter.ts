@@ -35,6 +35,12 @@ import {
   seekAiPresenterVideoForExportFrame,
   syncAiPresenterPreviewVideo,
 } from './aiPresenterMedia';
+import {
+  prepareClawatarForExport,
+  restoreClawatarPreviewSize,
+  setClawatarExportMode,
+  stepClawatarAtGlobalTime,
+} from './presenterRenderer';
 
 export type ExportFormatPreference = 'auto' | 'webm' | 'mp4';
 export type ExportResolutionPreference = 'auto' | '720p' | '1080p';
@@ -357,6 +363,14 @@ function buildScheduledAudioPlan(
         start: tReveal,
         end: Math.min(nextSlideStart - 0.02, tReveal + slide.voiceover.answer.duration),
       });
+    }
+    if (slide?.voiceover?.explanation?.dataUrl && slide.voiceover.explanation.duration > 0.2) {
+      const expStart =
+        tReveal + (slide?.voiceover?.answer?.dataUrl ? slide.voiceover.answer.duration + 0.15 : 0.45);
+      const expEnd = Math.min(nextSlideStart - 0.02, expStart + slide.voiceover.explanation.duration);
+      if (expEnd > expStart + 0.1) {
+        speechIntervals.push({ start: expStart, end: expEnd });
+      }
     }
   }
 
@@ -760,6 +774,10 @@ async function encodeWithWebCodecsPlan(
     let lastProgressPerf = 0;
     let lastYieldPerf = performance.now();
 
+    setClawatarExportMode(
+      Boolean(sTemplate.presenterEnabled && sTemplate.presenterStyle === 'clawatar3d')
+    );
+    try {
     for (let frameIdx = 0; frameIdx < totalFrames; frameIdx++) {
       if (signal.aborted) throw new Error('تم إلغاء التصدير.');
       if (fatalError) throw fatalError;
@@ -777,6 +795,9 @@ async function encodeWithWebCodecsPlan(
       const frameTime = Math.min(totalDuration, frameIdx / EXPORT_FPS);
       if (sTemplate.aiPresenter?.enabled && sTemplate.aiPresenter?.mediaKey) {
         await seekAiPresenterVideoForExportFrame(frameTime, sSlides, sTemplate, timing, sAudio);
+      }
+      if (sTemplate.presenterEnabled && sTemplate.presenterStyle === 'clawatar3d') {
+        await stepClawatarAtGlobalTime(frameTime, 1 / EXPORT_FPS, sSlides, sTemplate, timing, sAudio);
       }
       renderQuizFrame(renderCtx, frameTime, sSlides, sTemplate, timing, sAudio, false);
 
@@ -814,6 +835,10 @@ async function encodeWithWebCodecsPlan(
         lastYieldPerf = performance.now();
         await sleepMs(0);
       }
+    }
+    } finally {
+      setClawatarExportMode(false);
+      restoreClawatarPreviewSize();
     }
 
     onProgress({
@@ -927,6 +952,7 @@ export async function exportQuizVideo(
     preloadTemplateBackground(template, slides),
     preloadTimerVideo(),
     preloadAiPresenterMedia(template.aiPresenter),
+    prepareClawatarForExport(template),
   ]);
   clearRendererCaches();
   checkAborted();
@@ -1415,6 +1441,17 @@ export async function exportQuizVideo(
                 maxDur
               );
             }
+          } else if (ev.type === 'optionAppearSfx' && ev.sfxId && ev.sfxId !== 'none') {
+            soundEngine.playBuiltInSfx(
+              ev.sfxId,
+              ev.sfxVolume ?? 0.45,
+              sharedAudioCtx,
+              audioDest,
+              when,
+              false,
+              timing.suspenseDuration,
+              maxDur
+            );
           } else if (ev.type === 'countdownTick') {
             void soundEngine.playSlot(
               sAudio.countdownTick,

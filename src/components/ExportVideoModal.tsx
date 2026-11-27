@@ -50,6 +50,7 @@ import {
   saveOrDownloadBlob,
   shareBlobNatively,
 } from '../utils/nativeDownload';
+import { triggerHaptic } from '../utils/haptics';
 import { GoogleSignInButton } from './YouTubePublishPanel';
 
 export interface SharedYouTubeProps {
@@ -212,6 +213,7 @@ export const ExportVideoModal: React.FC<ExportVideoModalProps> = ({
     overrideFormat?: ExportFormatPreference,
     overrideRes?: ExportResolutionPreference
   ) => {
+    triggerHaptic('medium');
     try {
       soundEngine.getContext();
     } catch {
@@ -264,6 +266,7 @@ export const ExportVideoModal: React.FC<ExportVideoModalProps> = ({
         setVideoUrl(url);
         setExportedFileName(generatedName);
         setStatus('done');
+        triggerHaptic('success');
 
         if (isAndroidNativeApp()) {
           setIsSaving(true);
@@ -283,6 +286,7 @@ export const ExportVideoModal: React.FC<ExportVideoModalProps> = ({
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
+        triggerHaptic('error');
         setErrorMsg(err instanceof Error ? err.message : 'فشل تصدير الفيديو');
         setStatus('error');
       });
@@ -292,6 +296,7 @@ export const ExportVideoModal: React.FC<ExportVideoModalProps> = ({
     overrideFormat?: ExportFormatPreference,
     overrideRes?: ExportResolutionPreference
   ) => {
+    triggerHaptic('medium');
     try {
       soundEngine.getContext();
     } catch {
@@ -363,10 +368,12 @@ export const ExportVideoModal: React.FC<ExportVideoModalProps> = ({
         setVideoUrl(url);
         setExportedFileName(lastFile);
         setStatus('done');
+        triggerHaptic('success');
         setSaveNotice(`تم تصدير وحفظ ${totalCount} فيديوهات مستقلة بنجاح.`);
       }
     } catch (err: unknown) {
       if (controller.signal.aborted) return;
+      triggerHaptic('error');
       setErrorMsg(err instanceof Error ? err.message : 'فشل تصدير الدفعة');
       setStatus('error');
     }
@@ -416,11 +423,13 @@ export const ExportVideoModal: React.FC<ExportVideoModalProps> = ({
 
   const handleDownload = async () => {
     if (!result || isSaving) return;
+    triggerHaptic('medium');
     setIsSaving(true);
     setSaveNotice('');
     const res = await saveOrDownloadBlob(result.blob, fileName, result.mimeType);
     setIsSaving(false);
     if (res.ok) {
+      triggerHaptic('success');
       const loc = res.savedLocation || 'Movies/QuizProReels';
       setSaveNotice(
         res.savedNatively
@@ -428,12 +437,14 @@ export const ExportVideoModal: React.FC<ExportVideoModalProps> = ({
           : 'بدأ تنزيل الفيديو على جهازك.'
       );
     } else if (res.error) {
+      triggerHaptic('error');
       setSaveNotice(`تعذر حفظ الفيديو: ${res.error}`);
     }
   };
 
   const handleCaptureCover = async () => {
     if (isCapturingThumb) return;
+    triggerHaptic('medium');
     setIsCapturingThumb(true);
     try {
       const targetIdx = scopeMode === 'single' ? selectedSlideIdx : 0;
@@ -464,8 +475,10 @@ export const ExportVideoModal: React.FC<ExportVideoModalProps> = ({
         const thumbName = `quiz-cover-${Date.now()}.jpg`;
         const res = await saveOrDownloadBlob(blob, thumbName, 'image/jpeg');
         if (res.ok) {
+          triggerHaptic('success');
           setSaveNotice('تم حفظ صورة الغلاف (JPG) بدقة الفيديو الكاملة.');
         } else if (res.error) {
+          triggerHaptic('error');
           setSaveNotice(`تعذر حفظ الغلاف: ${res.error}`);
         }
       }
@@ -480,6 +493,7 @@ export const ExportVideoModal: React.FC<ExportVideoModalProps> = ({
 
   const handleShareVideo = async (copyMetadataFirst = false) => {
     if (!result || isSaving) return;
+    triggerHaptic('medium');
     if (copyMetadataFirst) {
       try {
         await navigator.clipboard.writeText(
@@ -507,6 +521,7 @@ export const ExportVideoModal: React.FC<ExportVideoModalProps> = ({
   };
 
   const handleCancelAndClose = () => {
+    triggerHaptic('light');
     if (abortRef.current) {
       abortRef.current.abort();
     }
@@ -515,6 +530,7 @@ export const ExportVideoModal: React.FC<ExportVideoModalProps> = ({
 
   const handleSwitchScope = (nextScope: ExportScopeMode) => {
     if (nextScope === scopeMode && status !== 'idle') return;
+    triggerHaptic('light');
     if (abortRef.current) {
       abortRef.current.abort();
     }

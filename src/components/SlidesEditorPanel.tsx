@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
+  BookOpenCheck,
   Calculator,
   Check,
   ChevronDown,
@@ -22,6 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import { soundEngine } from '../audio/soundEngine';
+import { triggerHaptic } from '../utils/haptics';
 import {
   AI_VOICE_OPTIONS,
   AiApiError,
@@ -30,6 +32,8 @@ import {
   generateSingleTtsClip,
   generateSlidePuzzleIllustration,
   generateSlideVoiceoverSafe,
+  generateVerifiedEvidence,
+  prepareArabicTtsFields,
 } from '../services/aiClient';
 import { readFileAsDataUrl } from '../storage/projectStore';
 import {
@@ -47,6 +51,11 @@ import {
   SlideOptionImage,
   SlideType,
 } from '../types/quiz';
+import {
+  getSlideSpokenAnswer,
+  getSlideSpokenOption,
+  getSlideSpokenQuestion,
+} from '../utils/arabicPronunciation';
 import { MathFieldInput } from './MathFieldInput';
 import { MicRecordButton } from './MicRecordButton';
 import { TtsQuotaBanner } from './TtsQuotaBanner';
@@ -95,6 +104,10 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [mathTarget, setMathTarget] = useState<'question' | 0 | 1 | 2 | 3 | null>(null);
   const [showPresenterCuesEditor, setShowPresenterCuesEditor] = useState(false);
+  const [showTtsSpokenEditor, setShowTtsSpokenEditor] = useState(false);
+  const [isPreparingTts, setIsPreparingTts] = useState(false);
+  const [isGeneratingEvidence, setIsGeneratingEvidence] = useState(false);
+  const [evidenceNotice, setEvidenceNotice] = useState<string | null>(null);
 
   if (!activeSlide) return null;
 
@@ -180,15 +193,13 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
     let fileName = 'ai-clip.wav';
 
     if (target === 'question') {
-      textToSpeak = activeSlide.question.trim();
+      textToSpeak = getSlideSpokenQuestion(activeSlide);
       fileName = 'ai-question.wav';
     } else if (target === 'answer') {
-      const ansIdx = activeSlideType === 'clues' ? 3 : activeSlide.correctIndex;
-      const ansOpt = activeSlide.options[ansIdx] || '';
-      textToSpeak = `الإجابة الصحيحة هي: ${ansOpt}`;
+      textToSpeak = getSlideSpokenAnswer(activeSlide);
       fileName = 'ai-answer.wav';
     } else {
-      textToSpeak = activeSlide.options[target]?.trim() || '';
+      textToSpeak = getSlideSpokenOption(activeSlide, target);
       fileName = `ai-option-${target + 1}.wav`;
     }
 
@@ -241,10 +252,11 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
           },
         };
 
-        if (workingSlide.question.trim() && !workingSlide.voiceover?.question) {
+        const spokenQ = getSlideSpokenQuestion(workingSlide);
+        if (spokenQ && !workingSlide.voiceover?.question) {
           setVoiceStepText(`سؤال ${sIdx + 1}/${slides.length}: السؤال...`);
           const clip = await generateSingleTtsClip(
-            workingSlide.question,
+            spokenQ,
             aiVoiceName,
             `ai-q-${sIdx + 1}.wav`
           );
@@ -261,11 +273,11 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
                 ? 3
                 : 4;
           for (let oIdx = 0; oIdx < optCount; oIdx++) {
-            const optText = workingSlide.options[oIdx]?.trim();
-            if (optText && !workingSlide.voiceover?.options?.[oIdx]) {
+            const spokenOpt = getSlideSpokenOption(workingSlide, oIdx);
+            if (spokenOpt && !workingSlide.voiceover?.options?.[oIdx]) {
               setVoiceStepText(`سؤال ${sIdx + 1}/${slides.length}: ${oIdx + 1}...`);
               const clip = await generateSingleTtsClip(
-                optText,
+                spokenOpt,
                 aiVoiceName,
                 `ai-s${sIdx + 1}-opt${oIdx + 1}.wav`
               );
@@ -282,13 +294,11 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
         }
 
         if ((voiceMode === 'questionAndAnswer' || voiceMode === 'full') && !workingSlide.voiceover?.answer) {
-          const ansIdx =
-            workingSlide.slideType === 'clues' ? 3 : workingSlide.correctIndex;
-          const ansOpt = workingSlide.options[ansIdx]?.trim() || '';
-          if (ansOpt) {
+          const spokenAns = getSlideSpokenAnswer(workingSlide);
+          if (spokenAns) {
             setVoiceStepText(`سؤال ${sIdx + 1}/${slides.length}: الحل...`);
             const clip = await generateSingleTtsClip(
-              `الإجابة الصحيحة هي: ${ansOpt}`,
+              spokenAns,
               aiVoiceName,
               `ai-s${sIdx + 1}-ans.wav`
             );
@@ -610,7 +620,10 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
           </span>
           <button
             type="button"
-            onClick={onAddSlide}
+            onClick={() => {
+              triggerHaptic('medium');
+              onAddSlide();
+            }}
             className="flex items-center gap-1 h-8 px-2.5 rounded-lg bg-[#00B050]/15 hover:bg-[#00B050]/25 text-[#00B050] dark:text-[#6ee7b7] border border-[#00B050]/45 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" />
@@ -632,7 +645,10 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
               >
                 <button
                   type="button"
-                  onClick={() => onSelectSlide(idx)}
+                  onClick={() => {
+                    triggerHaptic('selection');
+                    onSelectSlide(idx);
+                  }}
                   className="px-2.5 py-1.5 text-xs font-bold whitespace-nowrap cursor-pointer"
                 >
                   سؤال {idx + 1}
@@ -642,6 +658,7 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
+                      triggerHaptic('warning');
                       onDeleteSlide(idx);
                     }}
                     title={`حذف السؤال ${idx + 1}`}
@@ -772,7 +789,10 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
             <button
               key={fmt.id}
               type="button"
-              onClick={() => switchSlideType(fmt.id)}
+              onClick={() => {
+                triggerHaptic('selection');
+                switchSlideType(fmt.id);
+              }}
               className={`py-1.5 px-1 rounded-md text-[11px] font-bold transition-colors whitespace-nowrap cursor-pointer ${
                 activeSlideType === fmt.id
                   ? 'bg-[#00B050] text-white'
@@ -791,7 +811,10 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
               <button
                 type="button"
                 disabled={isVoicing}
-                onClick={() => void handleGenerateSlideAiVoice()}
+                onClick={() => {
+                  triggerHaptic('medium');
+                  void handleGenerateSlideAiVoice();
+                }}
                 title="توليد تعليق صوتي بالذكاء الاصطناعي لهذا السؤال"
                 className="flex items-center gap-1 h-7 px-2.5 rounded-md bg-[#00B050]/18 hover:bg-[#00B050]/30 disabled:opacity-50 text-[#00B050] dark:text-[#6ee7b7] border border-[#00B050]/45 text-[11px] font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
@@ -807,7 +830,10 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
                 <button
                   type="button"
                   disabled={isVoicing}
-                  onClick={() => void handleBatchGenerateMissingVoices()}
+                  onClick={() => {
+                    triggerHaptic('medium');
+                    void handleBatchGenerateMissingVoices();
+                  }}
                   title="توليد الأصوات الناقصة لجميع الشرائح دفعة واحدة"
                   className="flex items-center gap-1 h-7 px-2 rounded-md bg-[var(--panel)] hover:border-[#00B050] disabled:opacity-50 text-[var(--ptxt)] border border-[var(--pline)] text-[11px] font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 >
@@ -1481,12 +1507,13 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
                   ) : (
                     <button
                       type="button"
-                      onClick={() =>
+                      onClick={() => {
+                        triggerHaptic('selection');
                         onUpdateSlide(activeIndex, {
                           ...activeSlide,
                           correctIndex: optIdx as 0 | 1 | 2 | 3,
-                        })
-                      }
+                        });
+                      }}
                       title="تحديد كإجابة صحيحة"
                       className={`flex items-center justify-center gap-1 min-w-[52px] h-9 px-2 rounded-lg text-xs font-bold transition-colors shrink-0 cursor-pointer ${
                         isCorrect
@@ -2036,9 +2063,186 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
                 explanationText: e.target.value,
               })
             }
-            placeholder="معلومة سريعة مع كشف الجواب..."
+            placeholder="معلومة سريعة أو دليل مختصر عند كشف الجواب..."
             className="w-full px-3.5 py-2 rounded-lg bg-[var(--surface)] border border-[var(--pline)] focus:border-[#00B050] focus:outline-none text-xs text-[var(--ptxt)] placeholder:text-[var(--pmuted)]"
           />
+
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              value={activeSlide.explanationSource ?? ''}
+              onChange={(e) =>
+                onUpdateSlide(activeIndex, {
+                  ...activeSlide,
+                  explanationSource: e.target.value,
+                })
+              }
+              placeholder="المصدر الموثق (اختياري، مثل: سورة البقرة / صحيح البخاري)"
+              className="flex-1 min-w-[180px] px-3 py-1.5 rounded-lg bg-[var(--surface)] border border-[var(--pline)] focus:border-[#00B050] focus:outline-none text-[11px] text-[var(--ptxt)] placeholder:text-[var(--pmuted)]"
+            />
+            <button
+              type="button"
+              disabled={isGeneratingEvidence}
+              onClick={async () => {
+                const ansIdx = activeSlideType === 'clues' ? 3 : activeSlide.correctIndex;
+                const ansText = (activeSlide.options[ansIdx] ?? '').trim();
+                if (!activeSlide.question.trim() || !ansText) {
+                  setEvidenceNotice('اكتب السؤال والإجابة الصحيحة أولاً.');
+                  return;
+                }
+                setEvidenceNotice(null);
+                setIsGeneratingEvidence(true);
+                try {
+                  const res = await generateVerifiedEvidence({
+                    question: activeSlide.question,
+                    correctAnswer: ansText,
+                    category: activeSlide.category,
+                  });
+                  onUpdateSlide(activeIndex, {
+                    ...activeSlide,
+                    explanationText: res.fact || activeSlide.explanationText,
+                    explanationSource: res.confident ? res.source : '',
+                  });
+                  setEvidenceNotice(
+                    res.confident
+                      ? 'تم توليد المعلومة الموثقة بنجاح ✓'
+                      : 'تمت كتابة المعلومة دون إضافة مرجع غير متأكد لتفادي أي تلفيق.'
+                  );
+                } catch (err) {
+                  setEvidenceNotice(
+                    err instanceof Error ? err.message : 'تعذر توليد بطاقة الدليل والمعلومة.'
+                  );
+                } finally {
+                  setIsGeneratingEvidence(false);
+                }
+              }}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#00B050]/15 hover:bg-[#00B050]/25 border border-[#00B050]/35 text-[11px] font-bold text-[#00B050] dark:text-[#6ee7b7] disabled:opacity-50 cursor-pointer shrink-0"
+            >
+              {isGeneratingEvidence ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <BookOpenCheck className="w-3.5 h-3.5" />
+              )}
+              <span>توليد دليل موثق ✨</span>
+            </button>
+          </div>
+          {evidenceNotice && (
+            <div className="text-[11px] text-amber-300 bg-amber-950/30 border border-amber-500/30 rounded-lg px-2.5 py-1.5">
+              {evidenceNotice}
+            </div>
+          )}
+        </div>
+
+        {/* Independent Spoken Arabic TTS Pronunciation Editor (Never changes visual text) */}
+        <div className="rounded-xl border border-[var(--pline)] bg-[var(--surface)]/75 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setShowTtsSpokenEditor((v) => !v)}
+            className="w-full flex items-center justify-between gap-2 px-3 py-2 text-right hover:bg-[var(--panel)]/60 transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-1.5 text-[11px] font-bold text-[var(--ptxt)]">
+              <Volume2 className="w-3.5 h-3.5 text-[#00B050]" />
+              <span>تحسين نطق التعليق الصوتي (TTS منفصل عن نص الشاشة)</span>
+            </div>
+            {showTtsSpokenEditor ? (
+              <ChevronUp className="w-3.5 h-3.5 text-[var(--pmuted)]" />
+            ) : (
+              <ChevronDown className="w-3.5 h-3.5 text-[var(--pmuted)]" />
+            )}
+          </button>
+
+          {showTtsSpokenEditor && (
+            <div className="p-3 border-t border-[var(--pline)] flex flex-col gap-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[10.5px] text-[var(--pmuted)]">
+                  يُقرأ هذا النص صوتياً فقط مع ضبط التشكيل والرموز دون تغيير النص الظاهر على الفيديو.
+                </span>
+                <button
+                  type="button"
+                  disabled={isPreparingTts}
+                  onClick={async () => {
+                    setIsPreparingTts(true);
+                    try {
+                      const ansIdx = activeSlideType === 'clues' ? 3 : activeSlide.correctIndex;
+                      const ansOpt = (activeSlide.options[ansIdx] ?? '').trim();
+                      const res = await prepareArabicTtsFields({
+                        question: activeSlide.question,
+                        options: activeSlide.options,
+                        answer: ansOpt ? `الإجابة الصحيحة هي: ${ansOpt}` : '',
+                      });
+                      onUpdateSlide(activeIndex, {
+                        ...activeSlide,
+                        spokenQuestion: res.spokenQuestion,
+                        spokenOptions: res.spokenOptions,
+                        spokenAnswer: res.spokenAnswer,
+                      });
+                    } finally {
+                      setIsPreparingTts(false);
+                    }
+                  }}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#00B050]/18 hover:bg-[#00B050]/28 border border-[#00B050]/40 text-[10.5px] font-bold text-[#00B050] dark:text-[#6ee7b7] cursor-pointer disabled:opacity-50"
+                >
+                  {isPreparingTts ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Sparkles className="w-3 h-3" />
+                  )}
+                  <span>تشكيل وضبط النطق بالذكاء ✨</span>
+                </button>
+              </div>
+
+              <label className="flex flex-col gap-1">
+                <span className="text-[10.5px] text-[var(--pmuted)]">نطق السؤال الصوتي:</span>
+                <input
+                  type="text"
+                  value={activeSlide.spokenQuestion ?? ''}
+                  onChange={(e) =>
+                    onUpdateSlide(activeIndex, { ...activeSlide, spokenQuestion: e.target.value })
+                  }
+                  placeholder={activeSlide.question || 'يُستخدم السؤال الأصلي مع القاموس التلقائي'}
+                  className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] text-[var(--ptxt)]"
+                />
+              </label>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                {activeSlide.options.map((opt, oIdx) => {
+                  if (!opt.trim() && oIdx >= 2 && (activeSlideType === 'trueFalse' || activeSlideType === 'versus')) {
+                    return null;
+                  }
+                  const currSpoken = activeSlide.spokenOptions?.[oIdx] ?? '';
+                  return (
+                    <input
+                      key={oIdx}
+                      type="text"
+                      value={currSpoken}
+                      onChange={(e) => {
+                        const nextArr = [
+                          ...(activeSlide.spokenOptions ?? ['', '', '', '']),
+                        ] as [string, string, string, string];
+                        nextArr[oIdx] = e.target.value;
+                        onUpdateSlide(activeIndex, { ...activeSlide, spokenOptions: nextArr });
+                      }}
+                      placeholder={`نطق ${oIdx + 1}: ${opt || '—'}`}
+                      className="px-2.5 py-1 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] text-[var(--ptxt)]"
+                    />
+                  );
+                })}
+              </div>
+
+              <label className="flex flex-col gap-1">
+                <span className="text-[10.5px] text-[var(--pmuted)]">نطق الإجابة الصحيحة الصوتي:</span>
+                <input
+                  type="text"
+                  value={activeSlide.spokenAnswer ?? ''}
+                  onChange={(e) =>
+                    onUpdateSlide(activeIndex, { ...activeSlide, spokenAnswer: e.target.value })
+                  }
+                  placeholder="مثال: الإجابة الصحيحة هي: غَزْوَةُ بَدْرٍ"
+                  className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] text-[var(--ptxt)]"
+                />
+              </label>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col gap-1.5">

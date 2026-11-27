@@ -12,6 +12,9 @@ export interface ChannelBrandKit {
   brandLogoDataUrl?: string;
   brandLogoName?: string;
   brandHandleText: string;
+  brandChannelName?: string;
+  showChannelName?: boolean;
+  brandAccentColor?: string;
   brandLogoPosition: TemplateSettings['brandLogoPosition'];
   brandLogoX?: number;
   brandLogoY?: number;
@@ -54,6 +57,9 @@ export function extractBrandKitFromTemplate(
     brandLogoDataUrl: template.brandLogoDataUrl,
     brandLogoName: template.brandLogoName,
     brandHandleText: template.brandHandleText || '',
+    brandChannelName: template.brandChannelName || '',
+    showChannelName: template.showChannelName ?? true,
+    brandAccentColor: template.brandAccentColor || '',
     brandLogoPosition: template.brandLogoPosition || 'topRight',
     brandLogoX: template.brandLogoX,
     brandLogoY: template.brandLogoY,
@@ -96,6 +102,9 @@ export function applyBrandKitToTemplate(
     brandLogoDataUrl: kit.brandLogoDataUrl ?? current.brandLogoDataUrl,
     brandLogoName: kit.brandLogoName ?? current.brandLogoName,
     brandHandleText: kit.brandHandleText,
+    brandChannelName: kit.brandChannelName ?? current.brandChannelName ?? '',
+    showChannelName: kit.showChannelName ?? current.showChannelName ?? true,
+    brandAccentColor: kit.brandAccentColor ?? current.brandAccentColor ?? '',
     brandLogoPosition: kit.brandLogoPosition,
     brandLogoX: kit.brandLogoX,
     brandLogoY: kit.brandLogoY,
