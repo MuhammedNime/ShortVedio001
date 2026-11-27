@@ -1,21 +1,24 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Copy, Download, FileUp, FolderOpen, Plus, Star, Trash2, X } from 'lucide-react';
+import { Copy, Download, FileUp, FolderOpen, Plus, ShieldCheck, Star, Trash2, X } from 'lucide-react';
 import { buildFullStudioBackup, restoreFullStudioBackup } from '../storage/backupVault';
 import { CustomTemplatePreset, getDefaultCustomPreset } from '../storage/customPresets';
 import {
   ProjectSummary,
+  deepCloneProject,
+  deepCloneValue,
   deleteProjectFromStore,
   listProjectsFromStore,
   loadProjectById,
   saveProjectToStore,
 } from '../storage/projectStore';
-import { DEFAULT_TEMPLATE, QuizProject, createDefaultProject } from '../types/quiz';
+import { DEFAULT_TEMPLATE, QuizProject, createDefaultProject, createUniqueId } from '../types/quiz';
 import { saveOrDownloadBlob } from '../utils/nativeDownload';
 
 interface ProjectsModalProps {
   isOpen: boolean;
   currentProject: QuizProject;
   onClose: () => void;
+  onBeforeSwitchProject?: () => Promise<void>;
   onSelectProject: (proj: QuizProject) => void;
   onRenameCurrent: (name: string) => void;
 }
@@ -24,6 +27,7 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({
   isOpen,
   currentProject,
   onClose,
+  onBeforeSwitchProject,
   onSelectProject,
   onRenameCurrent,
 }) => {
@@ -32,65 +36,111 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({
   const [defaultPreset, setDefaultPreset] = useState<CustomTemplatePreset | null>(null);
   const [backupNotice, setBackupNotice] = useState<string>('');
   const [isBackingUp, setIsBackingUp] = useState(false);
+  const [isSwitching, setIsSwitching] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const restoreInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
     setEditingName(currentProject.name);
     setBackupNotice('');
+    setConfirmDeleteId(null);
     void getDefaultCustomPreset().then(setDefaultPreset);
-    void saveProjectToStore(currentProject).then(() => {
-      void listProjectsFromStore().then(setProjects);
-    });
+    const flushAndList = async () => {
+      if (onBeforeSwitchProject) {
+        await onBeforeSwitchProject();
+      } else {
+        await saveProjectToStore(currentProject);
+      }
+      const list = await listProjectsFromStore();
+      setProjects(list);
+    };
+    void flushAndList();
   }, [isOpen]);
 
   if (!isOpen) return null;
 
-  const handleCreateNew = async () => {
-    const fresh = createDefaultProject();
-    fresh.id = `proj-${Date.now()}`;
-    fresh.name = `مشروع جديد ${projects.length + 1}`;
-    const customDef = defaultPreset ?? (await getDefaultCustomPreset());
-    if (customDef) {
-      fresh.template = {
-        ...DEFAULT_TEMPLATE,
-        ...customDef.template,
-      };
-      if (customDef.timing) {
-        fresh.timing = { ...customDef.timing };
-      }
+  const flushOutgoing = async () => {
+    if (onBeforeSwitchProject) {
+      await onBeforeSwitchProject();
+    } else {
+      await saveProjectToStore(currentProject);
     }
-    await saveProjectToStore(fresh);
-    onSelectProject(fresh);
-    onClose();
+  };
+
+  const handleCreateNew = async () => {
+    if (isSwitching) return;
+    setIsSwitching(true);
+    try {
+      await flushOutgoing();
+      const fresh = createDefaultProject();
+      fresh.id = createUniqueId('proj');
+      fresh.name = `مشروع جديد ${projects.length + 1}`;
+      const customDef = defaultPreset ?? (await getDefaultCustomPreset());
+      if (customDef) {
+        fresh.template = deepCloneValue({
+          ...DEFAULT_TEMPLATE,
+          ...customDef.template,
+        });
+        if (customDef.timing) {
+          fresh.timing = deepCloneValue(customDef.timing);
+        }
+        if (customDef.audio) {
+          fresh.audio = deepCloneValue(customDef.audio);
+        }
+      }
+      await saveProjectToStore(fresh, { setAsActive: true });
+      onSelectProject(fresh);
+      onClose();
+    } finally {
+      setIsSwitching(false);
+    }
   };
 
   const handleDuplicateCurrent = async () => {
-    const cloned: QuizProject = {
-      ...currentProject,
-      id: `proj-${Date.now()}`,
-      name: `${currentProject.name} (نسخة)`,
-      updatedAt: Date.now(),
-    };
-    await saveProjectToStore(cloned);
-    onSelectProject(cloned);
-    onClose();
+    if (isSwitching) return;
+    setIsSwitching(true);
+    try {
+      await flushOutgoing();
+      const cloned = deepCloneProject(currentProject, {
+        newId: createUniqueId('proj'),
+        newName: `${currentProject.name} (نسخة)`,
+        freshSlideIds: true,
+      });
+      await saveProjectToStore(cloned, { setAsActive: true });
+      onSelectProject(cloned);
+      onClose();
+    } finally {
+      setIsSwitching(false);
+    }
   };
 
   const handleOpenProject = async (id: string) => {
+    if (isSwitching) return;
     if (id === currentProject.id) {
       onClose();
       return;
     }
-    const loaded = await loadProjectById(id);
-    if (loaded) {
-      onSelectProject(loaded);
-      onClose();
+    setIsSwitching(true);
+    try {
+      await flushOutgoing();
+      const loaded = await loadProjectById(id);
+      if (loaded) {
+        onSelectProject(loaded);
+        onClose();
+      }
+    } finally {
+      setIsSwitching(false);
     }
   };
 
   const handleDelete = async (id: string) => {
     if (id === currentProject.id || projects.length <= 1) return;
+    if (confirmDeleteId !== id) {
+      setConfirmDeleteId(id);
+      return;
+    }
+    setConfirmDeleteId(null);
     const next = await deleteProjectFromStore(id);
     setProjects(next);
   };
@@ -162,6 +212,11 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({
         </div>
 
         <div className="p-5 flex flex-col gap-4 max-h-[78vh] overflow-y-auto">
+          <div className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#00B050]/10 border border-[#00B050]/30 text-[11px] text-[#00B050] dark:text-[#6ee7b7] font-semibold">
+            <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+            <span>كل مشروع وكل سؤال محفوظان في سجل معزول تماماً لمنع التداخل أو الفقدان.</span>
+          </div>
+
           {/* Rename Active Project */}
           <div className="flex flex-col gap-1.5">
             <span className="text-[11px] font-bold text-[var(--pmuted)]">اسم المشروع الحالي</span>
@@ -170,8 +225,16 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({
                 type="text"
                 value={editingName}
                 onChange={(e) => {
-                  setEditingName(e.target.value);
-                  onRenameCurrent(e.target.value);
+                  const nextName = e.target.value;
+                  setEditingName(nextName);
+                  onRenameCurrent(nextName);
+                  setProjects((prev) =>
+                    prev.map((item) =>
+                      item.id === currentProject.id
+                        ? { ...item, name: nextName || 'مشروع بدون اسم' }
+                        : item
+                    )
+                  );
                 }}
                 placeholder="اسم المشروع..."
                 className="flex-1 px-3 py-2 rounded-lg bg-[var(--surface)] border border-[var(--pline)] focus:border-[#00B050] focus:outline-none text-xs"
@@ -192,16 +255,18 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
+              disabled={isSwitching}
               onClick={() => void handleCreateNew()}
-              className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-[#00B050] hover:bg-[#00c85b] text-white text-xs font-bold transition-colors cursor-pointer"
+              className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-[#00B050] hover:bg-[#00c85b] disabled:opacity-60 text-white text-xs font-bold transition-colors cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               <span>مشروع جديد فارغ</span>
             </button>
             <button
               type="button"
+              disabled={isSwitching}
               onClick={() => void handleDuplicateCurrent()}
-              className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-[var(--surface)] hover:border-[var(--gold)] border border-[var(--pline)] text-xs font-bold transition-colors cursor-pointer"
+              className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-[var(--surface)] hover:border-[var(--gold)] disabled:opacity-60 border border-[var(--pline)] text-xs font-bold transition-colors cursor-pointer"
             >
               <Copy className="w-3.5 h-3.5 text-[var(--gold)]" />
               <span>نسخ القالب كمشروع جديد</span>
@@ -216,6 +281,7 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({
 
             {projects.map((p) => {
               const isActive = p.id === currentProject.id;
+              const isConfirmingDelete = confirmDeleteId === p.id;
               return (
                 <div
                   key={p.id}
@@ -227,6 +293,7 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({
                 >
                   <button
                     type="button"
+                    disabled={isSwitching}
                     onClick={() => void handleOpenProject(p.id)}
                     className="flex-1 text-right min-w-0 cursor-pointer"
                   >
@@ -245,10 +312,14 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({
                     <button
                       type="button"
                       onClick={() => void handleDelete(p.id)}
-                      title="حذف المشروع"
-                      className="p-1.5 rounded-lg text-rose-400 hover:bg-rose-500/15 cursor-pointer"
+                      title={isConfirmingDelete ? 'اضغط مجدداً لتأكيد الحذف' : 'حذف المشروع'}
+                      className={`px-2 py-1.5 rounded-lg text-[10px] font-bold cursor-pointer transition-colors ${
+                        isConfirmingDelete
+                          ? 'bg-rose-600 text-white'
+                          : 'text-rose-400 hover:bg-rose-500/15'
+                      }`}
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      {isConfirmingDelete ? 'تأكيد الحذف' : <Trash2 className="w-3.5 h-3.5" />}
                     </button>
                   )}
                 </div>

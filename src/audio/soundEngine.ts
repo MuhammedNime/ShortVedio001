@@ -1,4 +1,6 @@
 import {
+  AmbientSoundConfig,
+  AmbientSoundId,
   AudioSettings,
   AudioSlotConfig,
   AudioSlotId,
@@ -52,6 +54,10 @@ class SoundEngine {
   private ctx: AudioContext | null = null;
   private ctxCaches = new WeakMap<BaseAudioContext, Map<string, AudioBuffer>>();
   private bgNodes = new WeakMap<BaseAudioContext, { gain: GainNode; baseVolume: number }>();
+  private ambientNodes = new WeakMap<
+    BaseAudioContext,
+    { gain: GainNode; baseVolume: number; autoDuck: boolean }
+  >();
   private decodedDurations = new Map<string, number>();
   private activeSfxSources = new Set<AudioBufferSourceNode>();
   private activeVoiceSource: AudioBufferSourceNode | null = null;
@@ -60,6 +66,8 @@ class SoundEngine {
   private activeAiVoiceGain: GainNode | null = null;
   private activeBgSource: AudioBufferSourceNode | null = null;
   private activeBgGain: GainNode | null = null;
+  private activeAmbientSource: AudioBufferSourceNode | null = null;
+  private activeAmbientGain: GainNode | null = null;
   private voiceAnalyser: AnalyserNode | null = null;
   private voiceAnalyserBuf: Uint8Array<ArrayBuffer> | null = null;
 
@@ -217,24 +225,15 @@ class SoundEngine {
     return merged;
   }
 
-  public scheduleBgDuckIntervals(
+  private scheduleDuckCurveOnNode(
+    gainParam: AudioParam,
+    base: number,
+    target: number,
+    merged: Array<{ start: number; end: number }>,
     ctx: BaseAudioContext,
-    intervals: Array<{ start: number; end: number }>,
     audioStartTime: number,
-    duckRatio = 0.22,
-    maxAbsoluteEnd?: number
+    hardLimit: number
   ): void {
-    const bgEntry = this.bgNodes.get(ctx);
-    if (!bgEntry || bgEntry.baseVolume <= 0.001 || intervals.length === 0) return;
-
-    const merged = this.mergeDuckIntervals(intervals);
-    if (merged.length === 0) return;
-
-    const gainParam = bgEntry.gain.gain;
-    const base = bgEntry.baseVolume;
-    const target = Math.max(0.01, base * Math.max(0.05, Math.min(0.8, duckRatio)));
-    const hardLimit = maxAbsoluteEnd ?? Infinity;
-
     try {
       gainParam.cancelScheduledValues(audioStartTime);
       gainParam.setValueAtTime(base, audioStartTime);
@@ -261,6 +260,49 @@ class SoundEngine {
     }
   }
 
+  public scheduleBgDuckIntervals(
+    ctx: BaseAudioContext,
+    intervals: Array<{ start: number; end: number }>,
+    audioStartTime: number,
+    duckRatio = 0.22,
+    maxAbsoluteEnd?: number
+  ): void {
+    const merged = this.mergeDuckIntervals(intervals);
+    if (merged.length === 0) return;
+    const hardLimit = maxAbsoluteEnd ?? Infinity;
+
+    const bgEntry = this.bgNodes.get(ctx);
+    if (bgEntry && bgEntry.baseVolume > 0.001) {
+      const base = bgEntry.baseVolume;
+      const target = Math.max(0.01, base * Math.max(0.05, Math.min(0.8, duckRatio)));
+      this.scheduleDuckCurveOnNode(
+        bgEntry.gain.gain,
+        base,
+        target,
+        merged,
+        ctx,
+        audioStartTime,
+        hardLimit
+      );
+    }
+
+    const ambEntry = this.ambientNodes.get(ctx);
+    if (ambEntry && ambEntry.autoDuck && ambEntry.baseVolume > 0.001) {
+      const base = ambEntry.baseVolume;
+      const ambDuckRatio = Math.max(0.32, Math.min(0.85, duckRatio + 0.15));
+      const target = Math.max(0.01, base * ambDuckRatio);
+      this.scheduleDuckCurveOnNode(
+        ambEntry.gain.gain,
+        base,
+        target,
+        merged,
+        ctx,
+        audioStartTime,
+        hardLimit
+      );
+    }
+  }
+
   public duckBgMusic(
     ctxOverride: BaseAudioContext | undefined,
     speechDurationSec: number,
@@ -268,22 +310,39 @@ class SoundEngine {
   ): void {
     const ctx = ctxOverride ?? this.ctx;
     if (!ctx) return;
-    const bgEntry = this.bgNodes.get(ctx);
-    if (!bgEntry || bgEntry.baseVolume <= 0.001) return;
 
     const now = ctx.currentTime;
     const dur = Math.max(0.35, speechDurationSec);
-    const targetGain = Math.max(0.01, bgEntry.baseVolume * Math.max(0.05, Math.min(0.8, duckRatio)));
-    const gainParam = bgEntry.gain.gain;
 
-    try {
-      gainParam.cancelScheduledValues(now);
-      gainParam.setValueAtTime(gainParam.value, now);
-      gainParam.linearRampToValueAtTime(targetGain, now + 0.08);
-      gainParam.setValueAtTime(targetGain, now + Math.max(0.1, dur - 0.05));
-      gainParam.linearRampToValueAtTime(bgEntry.baseVolume, now + dur + 0.22);
-    } catch {
-      // ignore scheduling errors
+    const bgEntry = this.bgNodes.get(ctx);
+    if (bgEntry && bgEntry.baseVolume > 0.001) {
+      const targetGain = Math.max(0.01, bgEntry.baseVolume * Math.max(0.05, Math.min(0.8, duckRatio)));
+      const gainParam = bgEntry.gain.gain;
+      try {
+        gainParam.cancelScheduledValues(now);
+        gainParam.setValueAtTime(gainParam.value, now);
+        gainParam.linearRampToValueAtTime(targetGain, now + 0.08);
+        gainParam.setValueAtTime(targetGain, now + Math.max(0.1, dur - 0.05));
+        gainParam.linearRampToValueAtTime(bgEntry.baseVolume, now + dur + 0.22);
+      } catch {
+        // ignore scheduling errors
+      }
+    }
+
+    const ambEntry = this.ambientNodes.get(ctx);
+    if (ambEntry && ambEntry.autoDuck && ambEntry.baseVolume > 0.001) {
+      const ambRatio = Math.max(0.32, Math.min(0.85, duckRatio + 0.15));
+      const targetGain = Math.max(0.01, ambEntry.baseVolume * ambRatio);
+      const gainParam = ambEntry.gain.gain;
+      try {
+        gainParam.cancelScheduledValues(now);
+        gainParam.setValueAtTime(gainParam.value, now);
+        gainParam.linearRampToValueAtTime(targetGain, now + 0.1);
+        gainParam.setValueAtTime(targetGain, now + Math.max(0.1, dur - 0.05));
+        gainParam.linearRampToValueAtTime(ambEntry.baseVolume, now + dur + 0.24);
+      } catch {
+        // ignore scheduling errors
+      }
     }
   }
 
@@ -409,6 +468,10 @@ class SoundEngine {
       }
     });
 
+    if (audio.ambient?.sourceType === 'custom' && audio.ambient.customDataUrl) {
+      tasks.push(this.decodeDataUrl(audio.ambient.customDataUrl, targetCtx));
+    }
+
     if (template?.introHookAudio?.dataUrl) {
       tasks.push(this.decodeDataUrl(template.introHookAudio.dataUrl, targetCtx));
     }
@@ -493,6 +556,15 @@ class SoundEngine {
       suspense: syncSlot(audio.suspense),
       correctReveal: syncSlot(audio.correctReveal),
       bgMusic: syncSlot(audio.bgMusic),
+      ambient:
+        audio.ambient?.sourceType === 'custom' && audio.ambient.customDataUrl
+          ? {
+              ...audio.ambient,
+              duration:
+                this.getExactDuration(audio.ambient.customDataUrl, audio.ambient.duration ?? 0) ||
+                audio.ambient.duration,
+            }
+          : audio.ambient,
     };
 
     const syncedTemplate: TemplateSettings =
@@ -727,6 +799,389 @@ class SoundEngine {
       this.activeBgGain.disconnect();
       this.activeBgGain = null;
     }
+  }
+
+  public getOrCreateAmbientBuffer(id: AmbientSoundId, ctx: BaseAudioContext): AudioBuffer | null {
+    if (!id || id === 'none') return null;
+    const cache = this.getCacheForContext(ctx);
+    const cacheKey = `ambient_loop_v1_${id}_${ctx.sampleRate}`;
+    const existing = cache.get(cacheKey);
+    if (existing) return existing;
+
+    const sr = ctx.sampleRate;
+    const loopDurSec = 5.0;
+    const xfadeSec = 0.5;
+    const loopFrames = Math.floor(sr * loopDurSec);
+    const xfadeFrames = Math.floor(sr * xfadeSec);
+    const totalFrames = loopFrames + xfadeFrames;
+
+    const rawL = new Float32Array(totalFrames);
+    const rawR = new Float32Array(totalFrames);
+
+    // Seed deterministic PRNG per preset id
+    let seed = 2166136261;
+    for (let i = 0; i < id.length; i++) {
+      seed = Math.imul(seed ^ id.charCodeAt(i), 16777619);
+    }
+    const rand = () => {
+      seed |= 0;
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const randBipolar = () => rand() * 2 - 1;
+
+    // Pink noise filter state for L/R
+    let b0L = 0, b1L = 0, b2L = 0, b3L = 0;
+    let b0R = 0, b1R = 0, b2R = 0, b3R = 0;
+    let lpL = 0, lpR = 0;
+    let bpL1 = 0, bpL2 = 0, bpR1 = 0, bpR2 = 0;
+
+    // Discrete stochastic grain events (droplets, fire crackles, artisan taps, bird chirps)
+    interface GrainEvent {
+      start: number;
+      len: number;
+      freq: number;
+      freqEnd: number;
+      ampL: number;
+      ampR: number;
+      kind: 'ping' | 'pop' | 'step' | 'chirp';
+    }
+    const grains: GrainEvent[] = [];
+
+    if (id === 'gentleRain') {
+      for (let k = 0; k < 58; k++) {
+        const pan = rand();
+        const amp = 0.03 + rand() * 0.06;
+        grains.push({
+          start: Math.floor(rand() * (totalFrames - 2000)),
+          len: Math.floor(sr * (0.015 + rand() * 0.025)),
+          freq: 1400 + rand() * 2400,
+          freqEnd: 900 + rand() * 800,
+          ampL: amp * (1 - pan * 0.6),
+          ampR: amp * (0.4 + pan * 0.6),
+          kind: 'ping',
+        });
+      }
+    } else if (id === 'cracklingFire') {
+      for (let k = 0; k < 72; k++) {
+        const pan = rand();
+        const amp = 0.06 + rand() * 0.14;
+        grains.push({
+          start: Math.floor(rand() * (totalFrames - 1800)),
+          len: Math.floor(sr * (0.008 + rand() * 0.024)),
+          freq: 1600 + rand() * 3400,
+          freqEnd: 700 + rand() * 900,
+          ampL: amp * (1 - pan * 0.7),
+          ampR: amp * (0.3 + pan * 0.7),
+          kind: 'pop',
+        });
+      }
+    } else if (id === 'oldSouk') {
+      // Soft distant souk wooden cart/artisan clinks & basket rustle
+      for (let k = 0; k < 14; k++) {
+        const pan = rand();
+        const amp = 0.035 + rand() * 0.045;
+        grains.push({
+          start: Math.floor(rand() * (totalFrames - 4000)),
+          len: Math.floor(sr * (0.045 + rand() * 0.06)),
+          freq: 520 + rand() * 680,
+          freqEnd: 420 + rand() * 300,
+          ampL: amp * (1 - pan * 0.65),
+          ampR: amp * (0.35 + pan * 0.65),
+          kind: 'ping',
+        });
+      }
+    } else if (id === 'caravanJourney') {
+      // 7 steady desert hoof/sand steps across 5.5s
+      const stepCount = 8;
+      for (let k = 0; k < stepCount; k++) {
+        const stepPos = Math.floor((k / stepCount) * totalFrames + (rand() - 0.5) * sr * 0.06);
+        if (stepPos >= 0 && stepPos < totalFrames - Math.floor(sr * 0.2)) {
+          grains.push({
+            start: stepPos,
+            len: Math.floor(sr * 0.13),
+            freq: 110 + rand() * 28,
+            freqEnd: 58,
+            ampL: k % 2 === 0 ? 0.16 : 0.11,
+            ampR: k % 2 === 0 ? 0.11 : 0.16,
+            kind: 'step',
+          });
+        }
+      }
+    } else if (id === 'forestBirds') {
+      // 6 gentle melodic bird calls
+      const birdFreqs = [2250, 2680, 3020, 2480];
+      for (let k = 0; k < 6; k++) {
+        const pan = rand();
+        const f0 = birdFreqs[k % birdFreqs.length] + rand() * 260;
+        grains.push({
+          start: Math.floor((k * 0.78 + 0.18 + rand() * 0.25) * sr),
+          len: Math.floor(sr * (0.14 + rand() * 0.08)),
+          freq: f0,
+          freqEnd: f0 * (rand() > 0.5 ? 1.18 : 0.84),
+          ampL: 0.045 * (1 - pan * 0.65),
+          ampR: 0.045 * (0.35 + pan * 0.65),
+          kind: 'chirp',
+        });
+      }
+    }
+
+    const TWO_PI = Math.PI * 2;
+    for (let i = 0; i < totalFrames; i++) {
+      const t = i / sr;
+      const wL = randBipolar();
+      const wR = randBipolar();
+
+      // Pink noise approx (Paul Kellet)
+      b0L = 0.99765 * b0L + wL * 0.099046;
+      b1L = 0.963 * b1L + wL * 0.2965164;
+      b2L = 0.57 * b2L + wL * 1.0526913;
+      const pinkL = (b0L + b1L + b2L + wL * 0.1848) * 0.16;
+      b3L = pinkL;
+
+      b0R = 0.99765 * b0R + wR * 0.099046;
+      b1R = 0.963 * b1R + wR * 0.2965164;
+      b2R = 0.57 * b2R + wR * 1.0526913;
+      const pinkR = (b0R + b1R + b2R + wR * 0.1848) * 0.16;
+      b3R = pinkR;
+
+      let outL = 0;
+      let outR = 0;
+
+      if (id === 'spiritualPad') {
+        // Warm, serene harmonic chord (D3=146.8, A3=220, D4=293.6, A4=440 integer-friendly harmonics)
+        const breath = 0.82 + 0.18 * Math.sin(TWO_PI * (t / loopDurSec));
+        const d3 = Math.sin(TWO_PI * 147 * t) * 0.24;
+        const a3 = Math.sin(TWO_PI * 220.5 * t + 0.4) * 0.16;
+        const d4 = Math.sin(TWO_PI * 294 * t + 1.1) * 0.09;
+        const f4 = Math.sin(TWO_PI * 367.5 * t + 0.7) * 0.04;
+        lpL = lpL * 0.94 + pinkL * 0.06;
+        lpR = lpR * 0.94 + pinkR * 0.06;
+        outL = (d3 + a3 * 0.9 + d4 + f4) * 0.48 * breath + lpL * 0.16;
+        outR = (d3 + a3 * 1.05 + d4 * 0.9 + f4 * 1.1) * 0.48 * breath + lpR * 0.16;
+      } else if (id === 'documentaryDepth') {
+        const swell = 0.78 + 0.22 * Math.sin(TWO_PI * (t / loopDurSec) + 0.8);
+        const sub = Math.sin(TWO_PI * 65.4 * t) * 0.28 + Math.sin(TWO_PI * 98 * t) * 0.16;
+        const mid = Math.sin(TWO_PI * 130.8 * t + 0.5) * 0.1 + Math.sin(TWO_PI * 196 * t) * 0.05;
+        lpL = lpL * 0.92 + pinkL * 0.08;
+        lpR = lpR * 0.92 + pinkR * 0.08;
+        outL = (sub + mid) * 0.55 * swell + lpL * 0.25;
+        outR = (sub + mid * 0.94) * 0.55 * swell + lpR * 0.25;
+      } else if (id === 'desertWind' || id === 'caravanJourney') {
+        const gustL = 0.55 + 0.45 * Math.sin(TWO_PI * 0.4 * t + 0.2);
+        const gustR = 0.55 + 0.45 * Math.sin(TWO_PI * 0.4 * t + 1.4);
+        const cut = 0.05 + 0.07 * (0.5 + 0.5 * Math.sin(TWO_PI * 0.2 * t));
+        lpL = lpL + cut * (pinkL - lpL);
+        lpR = lpR + cut * (pinkR - lpR);
+        bpL1 = bpL1 + 0.025 * (lpL - bpL1);
+        bpR1 = bpR1 + 0.025 * (lpR - bpR1);
+        outL = (lpL - bpL1 * 0.75) * 1.15 * gustL;
+        outR = (lpR - bpR1 * 0.75) * 1.15 * gustR;
+      } else if (id === 'gentleRain') {
+        lpL = lpL * 0.68 + pinkL * 0.32;
+        lpR = lpR * 0.68 + pinkR * 0.32;
+        const steady = 0.92 + 0.08 * Math.sin(TWO_PI * 0.6 * t);
+        outL = lpL * 1.05 * steady + (pinkL - lpL) * 0.28;
+        outR = lpR * 1.05 * steady + (pinkR - lpR) * 0.28;
+      } else if (id === 'oceanWaves') {
+        // 5-second rhythmic ocean wave surge
+        const phase = (t % loopDurSec) / loopDurSec;
+        const wave = Math.pow(0.5 - 0.5 * Math.cos(TWO_PI * phase), 1.4);
+        const coeff = 0.04 + wave * 0.22;
+        lpL = lpL + coeff * (pinkL - lpL);
+        lpR = lpR + coeff * (pinkR - lpR);
+        const foam = (pinkL - lpL) * wave * 0.32;
+        const foamR = (pinkR - lpR) * wave * 0.32;
+        outL = lpL * (0.45 + 1.25 * wave) + foam;
+        outR = lpR * (0.45 + 1.25 * wave) + foamR;
+      } else if (id === 'nightCrickets') {
+        // Cool nocturnal breeze + gentle pulsed crickets
+        lpL = lpL * 0.91 + pinkL * 0.09;
+        lpR = lpR * 0.91 + pinkR * 0.09;
+        const cycle = (t * 1.2) % 1;
+        const burstEnv =
+          cycle < 0.36 ? Math.max(0, Math.sin(TWO_PI * 14 * cycle)) * Math.sin((Math.PI * cycle) / 0.36) : 0;
+        const c1 = Math.sin(TWO_PI * 4120 * t) * 0.048 * burstEnv;
+        const cycle2 = ((t + 0.42) * 1.0) % 1;
+        const burstEnv2 =
+          cycle2 < 0.3 ? Math.max(0, Math.sin(TWO_PI * 12 * cycle2)) * Math.sin((Math.PI * cycle2) / 0.3) : 0;
+        const c2 = Math.sin(TWO_PI * 4380 * t) * 0.036 * burstEnv2;
+        outL = lpL * 0.62 + c1 * 0.8 + c2 * 0.35;
+        outR = lpR * 0.62 + c1 * 0.35 + c2 * 0.85;
+      } else if (id === 'forestBirds') {
+        const breeze = 0.7 + 0.3 * Math.sin(TWO_PI * 0.4 * t);
+        lpL = lpL * 0.85 + pinkL * 0.15;
+        lpR = lpR * 0.85 + pinkR * 0.15;
+        outL = lpL * 0.72 * breeze;
+        outR = lpR * 0.72 * breeze;
+      } else if (id === 'cracklingFire') {
+        lpL = lpL * 0.92 + pinkL * 0.08;
+        lpR = lpR * 0.92 + pinkR * 0.08;
+        const rumble = 0.85 + 0.15 * Math.sin(TWO_PI * 2.2 * t);
+        outL = lpL * 1.15 * rumble;
+        outR = lpR * 1.15 * rumble;
+      } else if (id === 'oldSouk') {
+        // Warm crowd chatter murmur across speech formants (300-1100Hz) + breezy ambiance
+        const swellL = 0.7 + 0.3 * Math.sin(TWO_PI * 0.8 * t + 0.3) * Math.sin(TWO_PI * 1.8 * t);
+        const swellR = 0.7 + 0.3 * Math.sin(TWO_PI * 0.6 * t + 1.9) * Math.sin(TWO_PI * 2.2 * t);
+        lpL = lpL + 0.14 * (pinkL - lpL);
+        bpL1 = bpL1 + 0.03 * (lpL - bpL1);
+        bpL2 = bpL2 + 0.08 * ((lpL - bpL1) - bpL2);
+        lpR = lpR + 0.14 * (pinkR - lpR);
+        bpR1 = bpR1 + 0.03 * (lpR - bpR1);
+        bpR2 = bpR2 + 0.08 * ((lpR - bpR1) - bpR2);
+        outL = lpL * 0.52 + bpL2 * 0.95 * swellL;
+        outR = lpR * 0.52 + bpR2 * 0.95 * swellR;
+      } else if (id === 'quizCrowd') {
+        // Studio crowd murmur + anticipation room tone
+        const modL = 0.78 + 0.22 * Math.sin(TWO_PI * 1.2 * t + 0.5);
+        const modR = 0.78 + 0.22 * Math.sin(TWO_PI * 1.4 * t + 2.1);
+        lpL = lpL + 0.16 * (pinkL - lpL);
+        bpL1 = bpL1 + 0.035 * (lpL - bpL1);
+        lpR = lpR + 0.16 * (pinkR - lpR);
+        bpR1 = bpR1 + 0.035 * (lpR - bpR1);
+        const studioHum = Math.sin(TWO_PI * 110 * t) * 0.04;
+        outL = (lpL - bpL1 * 0.55) * 0.95 * modL + lpL * 0.35 + studioHum;
+        outR = (lpR - bpR1 * 0.55) * 0.95 * modR + lpR * 0.35 + studioHum;
+      } else if (id === 'stadiumAmbience') {
+        // Wide arena crowd roar + energetic cheering waves
+        const cheerWave = 0.74 + 0.26 * Math.sin(TWO_PI * 0.4 * t);
+        lpL = lpL + 0.24 * (pinkL - lpL);
+        bpL1 = bpL1 + 0.04 * (lpL - bpL1);
+        lpR = lpR + 0.24 * (pinkR - lpR);
+        bpR1 = bpR1 + 0.04 * (lpR - bpR1);
+        outL = ((lpL - bpL1 * 0.4) * 1.1 + pinkL * 0.22) * cheerWave;
+        outR = ((lpR - bpR1 * 0.4) * 1.1 + pinkR * 0.22) * cheerWave;
+      }
+
+      rawL[i] = outL;
+      rawR[i] = outR;
+      void b3L;
+      void b3R;
+    }
+
+    // Mix discrete stochastic grains
+    for (const g of grains) {
+      for (let j = 0; j < g.len; j++) {
+        const idx = g.start + j;
+        if (idx >= totalFrames) break;
+        const p = j / Math.max(1, g.len);
+        const env =
+          g.kind === 'chirp'
+            ? Math.sin(Math.PI * p) * Math.sin(Math.PI * Math.min(1, p * 3))
+            : Math.exp(-p * (g.kind === 'pop' ? 7.5 : g.kind === 'step' ? 4.2 : 5.5)) *
+              Math.min(1, p * 12);
+        const freq = g.freq + (g.freqEnd - g.freq) * p;
+        const sig =
+          g.kind === 'pop'
+            ? (Math.sin(TWO_PI * freq * (j / sr)) * 0.6 + randBipolar() * 0.4) * env
+            : g.kind === 'step'
+              ? (Math.sin(TWO_PI * freq * (j / sr)) * 0.75 + randBipolar() * 0.18) * env
+              : Math.sin(TWO_PI * freq * (j / sr)) * env;
+        rawL[idx] += sig * g.ampL;
+        rawR[idx] += sig * g.ampR;
+      }
+    }
+
+    // Overlap-add raised-cosine seamless loop crossfade so loop seam is 100% invisible
+    const buf = ctx.createBuffer(2, loopFrames, sr);
+    const outChL = buf.getChannelData(0);
+    const outChR = buf.getChannelData(1);
+
+    for (let i = 0; i < loopFrames; i++) {
+      let sL = rawL[i];
+      let sR = rawR[i];
+      if (i < xfadeFrames) {
+        const alpha = 0.5 * (1 - Math.cos(Math.PI * (i / xfadeFrames)));
+        sL = sL * alpha + rawL[loopFrames + i] * (1 - alpha);
+        sR = sR * alpha + rawR[loopFrames + i] * (1 - alpha);
+      }
+      outChL[i] = Math.max(-0.92, Math.min(0.92, sL));
+      outChR[i] = Math.max(-0.92, Math.min(0.92, sR));
+    }
+
+    cache.set(cacheKey, buf);
+    return buf;
+  }
+
+  public async startAmbientSound(
+    config: AmbientSoundConfig | undefined,
+    destination?: AudioNode,
+    ctxOverride?: BaseAudioContext
+  ): Promise<AudioBufferSourceNode | null> {
+    if (!ctxOverride) {
+      this.stopAmbientSound();
+    }
+    if (!config || config.volume <= 0.001) return null;
+
+    const ctx = ctxOverride ?? this.getContext();
+    const dest = destination ?? ctx.destination;
+    let buffer: AudioBuffer | null = null;
+
+    if (config.sourceType === 'custom' && config.customDataUrl) {
+      buffer = await this.decodeDataUrl(config.customDataUrl, ctx);
+    } else if (config.id && config.id !== 'none') {
+      buffer = this.getOrCreateAmbientBuffer(config.id, ctx);
+    }
+
+    if (!buffer) return null;
+
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.loop = true;
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(config.volume, Math.min(ctx.currentTime + 0.25, ctx.currentTime + 0.25));
+    src.connect(gain);
+    gain.connect(dest);
+    src.start(ctx.currentTime);
+
+    this.ambientNodes.set(ctx, {
+      gain,
+      baseVolume: config.volume,
+      autoDuck: config.autoDuck !== false,
+    });
+
+    if (!ctxOverride) {
+      this.activeAmbientSource = src;
+      this.activeAmbientGain = gain;
+    }
+    return src;
+  }
+
+  public stopAmbientSound(): void {
+    if (this.ctx) {
+      this.ambientNodes.delete(this.ctx);
+    }
+    if (this.activeAmbientSource) {
+      try {
+        this.activeAmbientSource.stop();
+        this.activeAmbientSource.disconnect();
+      } catch {
+        // already stopped
+      }
+      this.activeAmbientSource = null;
+    }
+    if (this.activeAmbientGain) {
+      try {
+        this.activeAmbientGain.disconnect();
+      } catch {
+        // already disconnected
+      }
+      this.activeAmbientGain = null;
+    }
+  }
+
+  public async previewAmbientSound(config: AmbientSoundConfig): Promise<void> {
+    await this.unlock();
+    if (config.sourceType !== 'custom' && config.id === 'none') {
+      this.stopAmbientSound();
+      return;
+    }
+    await this.startAmbientSound(config);
   }
 
   public previewBuiltInSfx(id: BuiltInSfxId, volume = 0.78): void {
@@ -1171,6 +1626,18 @@ class SoundEngine {
 
       // 1. Question enter: monophonic voiceover (bounded before countdown ticks!) OR short SFX
       const qBuf = lookupBuf(slide?.voiceover?.question?.dataUrl);
+      if (slide?.slideType === 'storyScene') {
+        if (qBuf) {
+          voiceQueue.push({
+            start: tQ,
+            buffer: qBuf,
+            volume: 1,
+            maxEnd: Math.max(tQ + 0.2, nextSlideStart - 0.02),
+          });
+        }
+        continue;
+      }
+
       const optCount =
         slide?.slideType === 'trueFalse' || slide?.slideType === 'versus'
           ? 2
@@ -1427,11 +1894,13 @@ class SoundEngine {
       }
     }
 
-    // Schedule looping Background Music with clean start/end fades + merged Auto-Ducking
+    // Schedule looping Background Music & Ambient Bed with clean start/end fades + merged Auto-Ducking
     const bgCfg = audio.bgMusic;
+    let hasBg = false;
     if (bgCfg && bgCfg.volume > 0.001 && bgCfg.sourceType === 'custom' && bgCfg.customDataUrl) {
       const bgBuf = lookupBuf(bgCfg.customDataUrl);
       if (bgBuf) {
+        hasBg = true;
         const bgSrc = offline.createBufferSource();
         bgSrc.buffer = bgBuf;
         bgSrc.loop = true;
@@ -1447,18 +1916,7 @@ class SoundEngine {
         bgGain.connect(limiter);
         this.bgNodes.set(offline, { gain: bgGain, baseVolume: baseVol });
 
-        if (timing.autoDuckMusic !== false && speechIntervals.length > 0 && tailStart > fadeInEnd + 0.2) {
-          this.scheduleBgDuckIntervals(
-            offline,
-            speechIntervals,
-            fadeInEnd + 0.02,
-            timing.bgMusicDuckRatio ?? 0.22,
-            tailStart - 0.03
-          );
-        }
-
         try {
-          bgGain.gain.cancelScheduledValues(tailStart);
           bgGain.gain.setValueAtTime(baseVol, tailStart);
           bgGain.gain.linearRampToValueAtTime(0.0001, totalDuration + 0.05);
         } catch {
@@ -1467,6 +1925,73 @@ class SoundEngine {
 
         bgSrc.start(0);
         bgSrc.stop(totalDuration + 0.08);
+      }
+    }
+
+    const ambCfg = audio.ambient;
+    let hasAmbient = false;
+    let ambGainNode: GainNode | null = null;
+    if (ambCfg && ambCfg.volume > 0.001) {
+      const ambBuf =
+        ambCfg.sourceType === 'custom' && ambCfg.customDataUrl
+          ? lookupBuf(ambCfg.customDataUrl)
+          : ambCfg.id !== 'none'
+            ? this.getOrCreateAmbientBuffer(ambCfg.id, offline)
+            : null;
+      if (ambBuf) {
+        hasAmbient = true;
+        const ambSrc = offline.createBufferSource();
+        ambSrc.buffer = ambBuf;
+        ambSrc.loop = true;
+
+        const ambGain = offline.createGain();
+        ambGainNode = ambGain;
+        const baseVol = ambCfg.volume;
+        const fadeInEnd = Math.min(0.25, totalDuration * 0.22);
+        const tailStart = Math.max(fadeInEnd + 0.08, totalDuration - 0.5);
+        ambGain.gain.setValueAtTime(0.0001, 0);
+        ambGain.gain.linearRampToValueAtTime(baseVol, fadeInEnd);
+
+        ambSrc.connect(ambGain);
+        ambGain.connect(limiter);
+        this.ambientNodes.set(offline, {
+          gain: ambGain,
+          baseVolume: baseVol,
+          autoDuck: ambCfg.autoDuck !== false,
+        });
+
+        ambSrc.start(0);
+        ambSrc.stop(totalDuration + 0.08);
+      }
+    }
+
+    if (
+      (hasBg || hasAmbient) &&
+      timing.autoDuckMusic !== false &&
+      speechIntervals.length > 0 &&
+      totalDuration > 0.7
+    ) {
+      const fadeInEnd = Math.min(0.25, totalDuration * 0.22);
+      const tailStart = Math.max(fadeInEnd + 0.08, totalDuration - 0.5);
+      if (tailStart > fadeInEnd + 0.2) {
+        this.scheduleBgDuckIntervals(
+          offline,
+          speechIntervals,
+          fadeInEnd + 0.02,
+          timing.bgMusicDuckRatio ?? 0.22,
+          tailStart - 0.03
+        );
+      }
+    }
+
+    if (ambGainNode && ambCfg && ambCfg.volume > 0.001) {
+      const fadeInEnd = Math.min(0.25, totalDuration * 0.22);
+      const tailStart = Math.max(fadeInEnd + 0.08, totalDuration - 0.5);
+      try {
+        ambGainNode.gain.setValueAtTime(ambCfg.volume, tailStart);
+        ambGainNode.gain.linearRampToValueAtTime(0.0001, totalDuration + 0.05);
+      } catch {
+        // ignore
       }
     }
 

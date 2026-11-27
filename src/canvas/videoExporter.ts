@@ -255,6 +255,24 @@ function buildScheduledAudioPlan(
     const tThink = base + sched.tThinkingStart;
     const tSus = base + sched.tSuspenseStart;
     const tReveal = base + sched.tRevealStart;
+    if (slide?.slideType === 'storyScene') {
+      const sceneDur = Math.max(0.25, nextSlideStart - tQ - 0.02);
+      if (slide.voiceover?.question?.dataUrl) {
+        events.push({
+          time: tQ,
+          maxDuration: sceneDur,
+          event: { type: 'questionEnter', slideIndex: sIdx },
+        });
+        if (slide.voiceover.question.duration > 0.2) {
+          speechIntervals.push({
+            start: tQ,
+            end: tQ + Math.min(slide.voiceover.question.duration, sceneDur),
+          });
+        }
+      }
+      continue;
+    }
+
     const optCount =
       slide?.slideType === 'trueFalse' || slide?.slideType === 'versus'
         ? 2
@@ -1221,6 +1239,7 @@ export async function exportQuizVideo(
     };
 
     let bgSource: AudioBufferSourceNode | null = null;
+    let ambientSource: AudioBufferSourceNode | null = null;
     let masterSource: AudioBufferSourceNode | null = null;
 
     if (sTemplate.aiPresenter?.enabled && sTemplate.aiPresenter?.mediaKey) {
@@ -1276,6 +1295,15 @@ export async function exportQuizVideo(
             // ignore
           }
           bgSource = null;
+        }
+        if (ambientSource) {
+          try {
+            ambientSource.stop();
+            ambientSource.disconnect();
+          } catch {
+            // ignore
+          }
+          ambientSource = null;
         }
         combinedStream.getTracks().forEach((t) => t.stop());
         canvasStream.getTracks().forEach((t) => t.stop());
@@ -1532,27 +1560,33 @@ export async function exportQuizVideo(
               // ignore
             }
           } else {
-            void soundEngine
-              .startBgMusic(sAudio.bgMusic, audioDest, sharedAudioCtx)
-              .then((src) => {
-                if ((cleanedUp || settled) && src) {
-                  try {
-                    src.stop();
-                  } catch {
-                    // ignore
+            void Promise.all([
+              soundEngine.startBgMusic(sAudio.bgMusic, audioDest, sharedAudioCtx),
+              soundEngine.startAmbientSound(sAudio.ambient, audioDest, sharedAudioCtx),
+            ]).then(([bgSrc, ambSrc]) => {
+              if (cleanedUp || settled) {
+                for (const s of [bgSrc, ambSrc]) {
+                  if (s) {
+                    try {
+                      s.stop();
+                    } catch {
+                      // ignore
+                    }
                   }
-                  return;
                 }
-                bgSource = src;
-                if (timing.autoDuckMusic !== false && fallbackPlan.speechIntervals.length > 0) {
-                  soundEngine.scheduleBgDuckIntervals(
-                    sharedAudioCtx,
-                    fallbackPlan.speechIntervals,
-                    audioStartTime,
-                    timing.bgMusicDuckRatio ?? 0.22
-                  );
-                }
-              });
+                return;
+              }
+              bgSource = bgSrc;
+              ambientSource = ambSrc;
+              if (timing.autoDuckMusic !== false && fallbackPlan.speechIntervals.length > 0) {
+                soundEngine.scheduleBgDuckIntervals(
+                  sharedAudioCtx,
+                  fallbackPlan.speechIntervals,
+                  audioStartTime,
+                  timing.bgMusicDuckRatio ?? 0.22
+                );
+              }
+            });
             scheduleFallbackAudioLookahead(0.8);
           }
         }

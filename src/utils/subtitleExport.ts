@@ -74,6 +74,13 @@ export function buildProjectSubtitleCues(
     const slideEnd = sched.endTime;
 
     const qText = (slide.question || '').trim();
+    if (slide.slideType === 'storyScene') {
+      if (qText) {
+        pushCue(qStart, Math.max(qStart + 0.6, slideEnd - 0.05), qText);
+      }
+      continue;
+    }
+
     if (qText) {
       pushCue(qStart, Math.max(qStart + 0.5, opt0Start - 0.05), qText);
     }

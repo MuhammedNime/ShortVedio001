@@ -1,4 +1,7 @@
 import {
+  AMBIENT_SOUND_PRESETS,
+  AmbientSoundId,
+  AudioSlotId,
   BackgroundFilterId,
   DEFAULT_TEMPLATE,
   DEFAULT_TIMING,
@@ -12,6 +15,7 @@ import {
   applyCustomTemplateSettings,
   applyThemeBackgroundOnly,
   createDefaultProject,
+  createUniqueId,
 } from '../types/quiz';
 
 const DB_NAME = 'quizpro_reels_studio_db';
@@ -21,8 +25,69 @@ const ACTIVE_PROJECT_KEY = 'quizpro_active_project_v1';
 const LIBRARY_INDEX_KEY = 'quizpro_projects_library_index_v1';
 const ACTIVE_PROJECT_ID_KEY = 'quizpro_active_project_id_v1';
 const PROJECT_ITEM_PREFIX = 'project_item_';
+const PROJECT_SLIDE_PREFIX = 'project_slide_';
 const AI_MEDIA_PREFIX = 'ai_presenter_blob_';
 const CURRENT_SCHEMA_VERSION = 9;
+const AUDIO_SLOT_KEYS: AudioSlotId[] = [
+  'questionEnter',
+  'optionEnter',
+  'countdownTick',
+  'suspense',
+  'correctReveal',
+  'bgMusic',
+];
+const VALID_AMBIENT_IDS = new Set<AmbientSoundId>([
+  'none',
+  ...AMBIENT_SOUND_PRESETS.map((p) => p.id),
+]);
+
+let storeOpChain: Promise<unknown> = Promise.resolve();
+
+function enqueueStoreOp<T>(task: () => Promise<T>): Promise<T> {
+  const next = storeOpChain.then(task, task);
+  storeOpChain = next.catch(() => undefined);
+  return next;
+}
+
+export function deepCloneValue<T>(value: T): T {
+  try {
+    if (typeof structuredClone === 'function') {
+      return structuredClone(value);
+    }
+  } catch {
+    // fallback to JSON deep copy
+  }
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+export function deepCloneSlide(slide: QuestionSlide, withFreshId = false): QuestionSlide {
+  const cloned = deepCloneValue(slide);
+  if (withFreshId) {
+    cloned.id = createUniqueId('slide');
+  }
+  return cloned;
+}
+
+export function deepCloneProject(
+  project: QuizProject,
+  options?: { newId?: string; newName?: string; freshSlideIds?: boolean }
+): QuizProject {
+  const cloned = deepCloneValue(project);
+  if (options?.newId) {
+    cloned.id = options.newId;
+  }
+  if (options?.newName !== undefined) {
+    cloned.name = options.newName;
+  }
+  if (options?.freshSlideIds && Array.isArray(cloned.slides)) {
+    cloned.slides = cloned.slides.map((s, idx) => ({
+      ...s,
+      id: createUniqueId(`slide-${idx + 1}`),
+    }));
+  }
+  cloned.updatedAt = Date.now();
+  return cloned;
+}
 
 export interface ProjectSummary {
   id: string;
@@ -175,11 +240,57 @@ export async function idbDelete(key: string): Promise<void> {
   });
 }
 
+async function idbGetAllKeys(): Promise<string[]> {
+  const db = await openDatabase();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      resolve([]);
+    }, 3000);
+    try {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      if (typeof store.getAllKeys === 'function') {
+        const req = store.getAllKeys();
+        req.onsuccess = () => {
+          clearTimeout(timer);
+          const keys = Array.isArray(req.result) ? req.result.map((k) => String(k)) : [];
+          resolve(keys);
+        };
+        req.onerror = () => {
+          clearTimeout(timer);
+          resolve([]);
+        };
+      } else {
+        const keys: string[] = [];
+        const req = store.openKeyCursor();
+        req.onsuccess = () => {
+          const cursor = req.result;
+          if (cursor) {
+            keys.push(String(cursor.key));
+            cursor.continue();
+          } else {
+            clearTimeout(timer);
+            resolve(keys);
+          }
+        };
+        req.onerror = () => {
+          clearTimeout(timer);
+          resolve(keys);
+        };
+      }
+    } catch {
+      clearTimeout(timer);
+      sharedDbPromise = null;
+      resolve([]);
+    }
+  });
+}
+
 function hashDataString(input: string): string {
   let h1 = 2166136261;
   let h2 = 3735928559;
-  const step = Math.max(1, Math.floor(input.length / 4096));
-  for (let i = 0; i < input.length; i += step) {
+  // Hash EVERY character so different assets of similar size never collide
+  for (let i = 0; i < input.length; i++) {
     const ch = input.charCodeAt(i);
     h1 ^= ch;
     h1 = Math.imul(h1, 16777619);
@@ -285,8 +396,7 @@ export async function offloadProjectMediaBlobs(project: QuizProject): Promise<Qu
   }
 
   const audioCopy = { ...project.audio };
-  (Object.keys(audioCopy) as Array<keyof typeof audioCopy>).forEach(() => {});
-  for (const slotKey of Object.keys(audioCopy) as Array<keyof typeof audioCopy>) {
+  for (const slotKey of AUDIO_SLOT_KEYS) {
     const slot = audioCopy[slotKey];
     if (slot?.customDataUrl) {
       audioCopy[slotKey] = {
@@ -294,6 +404,12 @@ export async function offloadProjectMediaBlobs(project: QuizProject): Promise<Qu
         customDataUrl: await offloadDataUrl(slot.customDataUrl),
       };
     }
+  }
+  if (audioCopy.ambient?.customDataUrl) {
+    audioCopy.ambient = {
+      ...audioCopy.ambient,
+      customDataUrl: await offloadDataUrl(audioCopy.ambient.customDataUrl),
+    };
   }
 
   const slidesCopy = await Promise.all(
@@ -336,6 +452,12 @@ export async function offloadProjectMediaBlobs(project: QuizProject): Promise<Qu
             dataUrl: (await offloadDataUrl(vo.answer.dataUrl)) || vo.answer.dataUrl,
           };
         }
+        if (vo.explanation?.dataUrl) {
+          vo.explanation = {
+            ...vo.explanation,
+            dataUrl: (await offloadDataUrl(vo.explanation.dataUrl)) || vo.explanation.dataUrl,
+          };
+        }
         next.voiceover = vo;
       }
       return next;
@@ -372,7 +494,7 @@ export async function hydrateProjectMedia(project: QuizProject): Promise<QuizPro
   }
 
   const audioCopy = { ...project.audio };
-  for (const slotKey of Object.keys(audioCopy) as Array<keyof typeof audioCopy>) {
+  for (const slotKey of AUDIO_SLOT_KEYS) {
     const slot = audioCopy[slotKey];
     if (slot?.customDataUrl) {
       audioCopy[slotKey] = {
@@ -380,6 +502,12 @@ export async function hydrateProjectMedia(project: QuizProject): Promise<QuizPro
         customDataUrl: await hydrateDataUrl(slot.customDataUrl, cache),
       };
     }
+  }
+  if (audioCopy.ambient?.customDataUrl) {
+    audioCopy.ambient = {
+      ...audioCopy.ambient,
+      customDataUrl: await hydrateDataUrl(audioCopy.ambient.customDataUrl, cache),
+    };
   }
 
   const slidesCopy = await Promise.all(
@@ -417,6 +545,10 @@ export async function hydrateProjectMedia(project: QuizProject): Promise<QuizPro
         if (vo.answer?.dataUrl) {
           const resolved = await hydrateDataUrl(vo.answer.dataUrl, cache);
           vo.answer = resolved ? { ...vo.answer, dataUrl: resolved } : undefined;
+        }
+        if (vo.explanation?.dataUrl) {
+          const resolved = await hydrateDataUrl(vo.explanation.dataUrl, cache);
+          vo.explanation = resolved ? { ...vo.explanation, dataUrl: resolved } : undefined;
         }
         next.voiceover = vo;
       }
@@ -465,44 +597,53 @@ function sanitizeSlide(raw: Partial<QuestionSlide> | null | undefined, idx: numb
     raw?.slideType === 'multiple3' ||
     raw?.slideType === 'trueFalse' ||
     raw?.slideType === 'clues' ||
-    raw?.slideType === 'versus'
+    raw?.slideType === 'versus' ||
+    raw?.slideType === 'storyScene'
       ? raw.slideType
       : 'multiple';
   const rawOpts = Array.isArray(raw?.options) ? raw.options : [];
-  const options: [string, string, string, string] = [
-    typeof rawOpts[0] === 'string'
-      ? rawOpts[0]
-      : slideType === 'trueFalse'
-        ? 'صح'
-        : slideType === 'clues'
-          ? 'التلميح الأول'
-          : slideType === 'versus'
-            ? 'الطرف الأول'
-            : 'الخيار الأول',
-    typeof rawOpts[1] === 'string'
-      ? rawOpts[1]
-      : slideType === 'trueFalse'
-        ? 'خطأ'
-        : slideType === 'clues'
-          ? 'التلميح الثاني'
-          : slideType === 'versus'
-            ? 'الطرف الثاني'
-            : 'الخيار الثاني',
-    typeof rawOpts[2] === 'string'
-      ? rawOpts[2]
-      : slideType === 'trueFalse' || slideType === 'versus'
-        ? ''
-        : slideType === 'clues'
-          ? 'التلميح الثالث'
-          : 'الخيار الثالث',
-    typeof rawOpts[3] === 'string'
-      ? rawOpts[3]
-      : slideType === 'trueFalse' || slideType === 'versus' || slideType === 'multiple3'
-        ? ''
-        : slideType === 'clues'
-          ? 'الإجابة الصحيحة'
-          : 'الخيار الرابع',
-  ];
+  const options: [string, string, string, string] =
+    slideType === 'storyScene'
+      ? [
+          typeof rawOpts[0] === 'string' ? rawOpts[0] : '',
+          typeof rawOpts[1] === 'string' ? rawOpts[1] : '',
+          typeof rawOpts[2] === 'string' ? rawOpts[2] : '',
+          typeof rawOpts[3] === 'string' ? rawOpts[3] : '',
+        ]
+      : [
+          typeof rawOpts[0] === 'string'
+            ? rawOpts[0]
+            : slideType === 'trueFalse'
+              ? 'صح'
+              : slideType === 'clues'
+                ? 'التلميح الأول'
+                : slideType === 'versus'
+                  ? 'الطرف الأول'
+                  : 'الخيار الأول',
+          typeof rawOpts[1] === 'string'
+            ? rawOpts[1]
+            : slideType === 'trueFalse'
+              ? 'خطأ'
+              : slideType === 'clues'
+                ? 'التلميح الثاني'
+                : slideType === 'versus'
+                  ? 'الطرف الثاني'
+                  : 'الخيار الثاني',
+          typeof rawOpts[2] === 'string'
+            ? rawOpts[2]
+            : slideType === 'trueFalse' || slideType === 'versus'
+              ? ''
+              : slideType === 'clues'
+                ? 'التلميح الثالث'
+                : 'الخيار الثالث',
+          typeof rawOpts[3] === 'string'
+            ? rawOpts[3]
+            : slideType === 'trueFalse' || slideType === 'versus' || slideType === 'multiple3'
+              ? ''
+              : slideType === 'clues'
+                ? 'الإجابة الصحيحة'
+                : 'الخيار الرابع',
+        ];
   const rawIdx = Number(raw?.correctIndex);
   const maxOptIdx =
     slideType === 'trueFalse' || slideType === 'versus'
@@ -619,12 +760,29 @@ function sanitizeSlide(raw: Partial<QuestionSlide> | null | undefined, idx: numb
       ? raw.difficulty
       : 'none';
 
+  const storyLayoutStyle =
+    raw?.storyLayoutStyle === 'centerVerse' || raw?.storyLayoutStyle === 'topCard'
+      ? raw.storyLayoutStyle
+      : raw?.storyLayoutStyle === 'cinematicBottom'
+        ? 'cinematicBottom'
+        : undefined;
+
   return {
     id: typeof raw?.id === 'string' && raw.id ? raw.id : `slide-${Date.now()}-${idx}`,
     slideType,
     difficulty,
-    badgeText: typeof raw?.badgeText === 'string' ? raw.badgeText : `السؤال ${idx + 1}`,
-    question: typeof raw?.question === 'string' ? raw.question : 'اكتب نص السؤال هنا',
+    badgeText:
+      typeof raw?.badgeText === 'string'
+        ? raw.badgeText
+        : slideType === 'storyScene'
+          ? `المشهد ${idx + 1}`
+          : `السؤال ${idx + 1}`,
+    question:
+      typeof raw?.question === 'string'
+        ? raw.question
+        : slideType === 'storyScene'
+          ? 'اكتب نص السرد للمشهد هنا'
+          : 'اكتب نص السؤال هنا',
     imageDataUrl: typeof raw?.imageDataUrl === 'string' ? raw.imageDataUrl : undefined,
     imageName: typeof raw?.imageName === 'string' ? raw.imageName : undefined,
     imageChallengeMode,
@@ -659,6 +817,9 @@ function sanitizeSlide(raw: Partial<QuestionSlide> | null | undefined, idx: numb
     spokenAnswer: typeof raw?.spokenAnswer === 'string' ? raw.spokenAnswer : undefined,
     episodeCliffhanger:
       typeof raw?.episodeCliffhanger === 'string' ? raw.episodeCliffhanger : undefined,
+    storyVisualPrompt:
+      typeof raw?.storyVisualPrompt === 'string' ? raw.storyVisualPrompt : undefined,
+    storyLayoutStyle,
     voiceover: raw?.voiceover,
     presenterCues: Array.isArray(raw?.presenterCues) ? raw.presenterCues : undefined,
   };
@@ -1073,7 +1234,15 @@ export function normalizeLoadedProject(
         : undefined,
   };
 
-  const sanitizedSlides = result.slides.map((s, i) => sanitizeSlide(s, i));
+  const seenSlideIds = new Set<string>();
+  const sanitizedSlides = result.slides.map((s, i) => {
+    const clean = sanitizeSlide(s, i);
+    if (seenSlideIds.has(clean.id)) {
+      clean.id = createUniqueId(`slide-${i + 1}`);
+    }
+    seenSlideIds.add(clean.id);
+    return clean;
+  });
   const rawTiming = result.timing && typeof result.timing === 'object' ? result.timing : undefined;
 
   const mergedTiming = {
@@ -1112,6 +1281,10 @@ export function normalizeLoadedProject(
       1.0,
       Math.min(10, sanitizeNumber(rawTiming?.escalatingMinSeconds, 2.0))
     ),
+    storySceneDuration: Math.max(
+      2.0,
+      Math.min(20, sanitizeNumber(rawTiming?.storySceneDuration, DEFAULT_TIMING.storySceneDuration ?? 4.5))
+    ),
   };
 
   if (!result.schemaVersion || result.schemaVersion < 4) {
@@ -1124,6 +1297,15 @@ export function normalizeLoadedProject(
   }
 
   const rawAudio = result.audio && typeof result.audio === 'object' ? result.audio : undefined;
+  const rawAmbient = rawAudio?.ambient;
+  const defaultAmbient = DEFAULT_AUDIO.ambient ?? {
+    id: 'none' as AmbientSoundId,
+    sourceType: 'builtin' as const,
+    volume: 0.34,
+    autoDuck: true,
+  };
+  const ambientId: AmbientSoundId =
+    rawAmbient?.id && VALID_AMBIENT_IDS.has(rawAmbient.id) ? rawAmbient.id : defaultAmbient.id;
 
   return {
     ...base,
@@ -1160,6 +1342,15 @@ export function normalizeLoadedProject(
         ...DEFAULT_AUDIO.bgMusic,
         ...(rawAudio?.bgMusic ?? {}),
       },
+      ambient: {
+        id: ambientId,
+        sourceType: rawAmbient?.sourceType === 'custom' && rawAmbient.customDataUrl ? 'custom' : 'builtin',
+        customFileName: typeof rawAmbient?.customFileName === 'string' ? rawAmbient.customFileName : undefined,
+        customDataUrl: typeof rawAmbient?.customDataUrl === 'string' ? rawAmbient.customDataUrl : undefined,
+        duration: Number.isFinite(Number(rawAmbient?.duration)) ? Number(rawAmbient?.duration) : undefined,
+        volume: Math.max(0, Math.min(1, sanitizeNumber(rawAmbient?.volume, defaultAmbient.volume))),
+        autoDuck: rawAmbient?.autoDuck ?? true,
+      },
     },
   };
 }
@@ -1174,116 +1365,240 @@ function toSummary(project: QuizProject): ProjectSummary {
   };
 }
 
-export async function listProjectsFromStore(): Promise<ProjectSummary[]> {
-  try {
-    const index = await idbGet<ProjectSummary[]>(LIBRARY_INDEX_KEY);
-    if (Array.isArray(index) && index.length > 0) {
-      return [...index].sort((a, b) => b.updatedAt - a.updatedAt);
-    }
-  } catch {
-    // ignore
+function slideRecordKey(projectId: string, slideId: string): string {
+  return `${PROJECT_SLIDE_PREFIX}${projectId}__${slideId}`;
+}
+
+async function writeIsolatedProjectRecord(compact: QuizProject): Promise<void> {
+  await idbSet(`${PROJECT_ITEM_PREFIX}${compact.id}`, compact);
+
+  // Store every question/slide in its own isolated project-scoped record
+  const activeSlideKeys = new Set<string>();
+  for (let i = 0; i < compact.slides.length; i++) {
+    const sl = compact.slides[i];
+    const key = slideRecordKey(compact.id, sl.id);
+    activeSlideKeys.add(key);
+    await idbSet(key, {
+      projectId: compact.id,
+      slideIndex: i,
+      updatedAt: compact.updatedAt,
+      slide: sl,
+    });
   }
-  return [];
+
+  // Clean up only stale slide records that belonged to THIS project
+  const scopePrefix = `${PROJECT_SLIDE_PREFIX}${compact.id}__`;
+  const allKeys = await idbGetAllKeys();
+  for (const k of allKeys) {
+    if (k.startsWith(scopePrefix) && !activeSlideKeys.has(k)) {
+      await idbDelete(k);
+    }
+  }
+}
+
+async function readIsolatedProjectRecord(projectId: string): Promise<Partial<QuizProject> | null> {
+  const raw = await idbGet<Partial<QuizProject>>(`${PROJECT_ITEM_PREFIX}${projectId}`);
+  if (!raw) return null;
+
+  // Verify or recover individual slides from project-scoped isolated question records
+  const scopePrefix = `${PROJECT_SLIDE_PREFIX}${projectId}__`;
+  if (!Array.isArray(raw.slides) || raw.slides.length === 0) {
+    const allKeys = await idbGetAllKeys();
+    const slideKeys = allKeys.filter((k) => k.startsWith(scopePrefix));
+    if (slideKeys.length > 0) {
+      const recovered: Array<{ slideIndex: number; slide: QuestionSlide }> = [];
+      for (const sk of slideKeys) {
+        const rec = await idbGet<{ slideIndex?: number; slide?: QuestionSlide }>(sk);
+        if (rec?.slide) {
+          recovered.push({ slideIndex: rec.slideIndex ?? 0, slide: rec.slide });
+        }
+      }
+      recovered.sort((a, b) => a.slideIndex - b.slideIndex);
+      if (recovered.length > 0) {
+        return { ...raw, slides: recovered.map((r) => r.slide) };
+      }
+    }
+  }
+  return raw;
+}
+
+async function rebuildProjectSummariesFromIdb(): Promise<ProjectSummary[]> {
+  const allKeys = await idbGetAllKeys();
+  const itemKeys = allKeys.filter((k) => k.startsWith(PROJECT_ITEM_PREFIX));
+  const indexed = (await idbGet<ProjectSummary[]>(LIBRARY_INDEX_KEY)) ?? [];
+  const byId = new Map<string, ProjectSummary>();
+
+  if (itemKeys.length > 0) {
+    for (const k of itemKeys) {
+      try {
+        const proj = await idbGet<Partial<QuizProject>>(k);
+        if (!proj || typeof proj.id !== 'string' || !proj.id) continue;
+        byId.set(proj.id, {
+          id: proj.id,
+          name: proj.name || 'مشروع بدون اسم',
+          slideCount: Array.isArray(proj.slides) ? proj.slides.length : 0,
+          aspectRatio: proj.template?.aspectRatio === '16:9' ? '16:9' : '9:16',
+          updatedAt: typeof proj.updatedAt === 'number' ? proj.updatedAt : Date.now(),
+        });
+      } catch {
+        // skip unreadable record
+      }
+    }
+  } else {
+    for (const s of indexed) {
+      if (s?.id) byId.set(s.id, s);
+    }
+  }
+
+  const list = Array.from(byId.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+  await idbSet(LIBRARY_INDEX_KEY, list);
+  return list;
+}
+
+export async function listProjectsFromStore(): Promise<ProjectSummary[]> {
+  return enqueueStoreOp(async () => {
+    try {
+      return await rebuildProjectSummariesFromIdb();
+    } catch {
+      const index = await idbGet<ProjectSummary[]>(LIBRARY_INDEX_KEY).catch(() => undefined);
+      if (Array.isArray(index)) {
+        return [...index].sort((a, b) => b.updatedAt - a.updatedAt);
+      }
+      return [];
+    }
+  });
 }
 
 export async function loadProjectById(projectId: string): Promise<QuizProject | null> {
-  try {
-    const raw = await idbGet<Partial<QuizProject>>(`${PROJECT_ITEM_PREFIX}${projectId}`);
-    if (!raw) return null;
-    const hydrated = await hydrateProjectMedia(normalizeLoadedProject(raw));
-    await idbSet(ACTIVE_PROJECT_ID_KEY, hydrated.id);
-    const compact = await offloadProjectMediaBlobs(hydrated);
-    await idbSet(ACTIVE_PROJECT_KEY, compact);
-    return hydrated;
-  } catch {
-    return null;
-  }
+  return enqueueStoreOp(async () => {
+    try {
+      const raw = await readIsolatedProjectRecord(projectId);
+      if (!raw) return null;
+      const hydrated = await hydrateProjectMedia(normalizeLoadedProject(raw));
+      await idbSet(ACTIVE_PROJECT_ID_KEY, hydrated.id);
+      const compact = await offloadProjectMediaBlobs(hydrated);
+      await idbSet(ACTIVE_PROJECT_KEY, compact);
+      return deepCloneProject(hydrated);
+    } catch {
+      return null;
+    }
+  });
 }
 
 export async function deleteProjectFromStore(projectId: string): Promise<ProjectSummary[]> {
-  try {
-    await idbDelete(`${PROJECT_ITEM_PREFIX}${projectId}`);
-    const existing = await listProjectsFromStore();
-    const filtered = existing.filter((p) => p.id !== projectId);
-    await idbSet(LIBRARY_INDEX_KEY, filtered);
-    return filtered;
-  } catch {
-    return [];
-  }
+  return enqueueStoreOp(async () => {
+    try {
+      await idbDelete(`${PROJECT_ITEM_PREFIX}${projectId}`);
+      const scopePrefix = `${PROJECT_SLIDE_PREFIX}${projectId}__`;
+      const allKeys = await idbGetAllKeys();
+      for (const k of allKeys) {
+        if (k.startsWith(scopePrefix)) {
+          await idbDelete(k);
+        }
+      }
+      const currentList = await rebuildProjectSummariesFromIdb();
+      return currentList;
+    } catch {
+      return [];
+    }
+  });
 }
 
 export async function loadProjectFromStore(): Promise<QuizProject> {
-  try {
-    const activeId = await idbGet<string>(ACTIVE_PROJECT_ID_KEY);
-    if (activeId) {
-      const byId = await idbGet<Partial<QuizProject>>(`${PROJECT_ITEM_PREFIX}${activeId}`);
-      if (byId) {
-        return await hydrateProjectMedia(normalizeLoadedProject(byId));
+  return enqueueStoreOp(async () => {
+    try {
+      const activeId = await idbGet<string>(ACTIVE_PROJECT_ID_KEY);
+      if (activeId) {
+        const byId = await readIsolatedProjectRecord(activeId);
+        if (byId) {
+          return deepCloneProject(await hydrateProjectMedia(normalizeLoadedProject(byId)));
+        }
       }
-    }
 
-    const legacy = await idbGet<Partial<QuizProject>>(ACTIVE_PROJECT_KEY);
-    const normalized = await hydrateProjectMedia(normalizeLoadedProject(legacy));
-    await saveProjectToStore(normalized);
-    return normalized;
-  } catch {
-    return createDefaultProject();
-  }
+      const legacy = await idbGet<Partial<QuizProject>>(ACTIVE_PROJECT_KEY);
+      const normalized = await hydrateProjectMedia(normalizeLoadedProject(legacy));
+      const stamped: QuizProject = {
+        ...normalized,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        updatedAt: Date.now(),
+      };
+      const compact = await offloadProjectMediaBlobs(stamped);
+      await writeIsolatedProjectRecord(compact);
+      await idbSet(ACTIVE_PROJECT_ID_KEY, compact.id);
+      await idbSet(ACTIVE_PROJECT_KEY, compact);
+      await rebuildProjectSummariesFromIdb();
+      return deepCloneProject(stamped);
+    } catch {
+      return createDefaultProject();
+    }
+  });
 }
 
-export async function saveProjectToStore(project: QuizProject): Promise<void> {
-  try {
-    const stamped: QuizProject = {
-      ...project,
-      schemaVersion: CURRENT_SCHEMA_VERSION,
-      updatedAt: Date.now(),
-    };
-    const compact = await offloadProjectMediaBlobs(stamped);
-    await idbSet(`${PROJECT_ITEM_PREFIX}${compact.id}`, compact);
-    await idbSet(ACTIVE_PROJECT_ID_KEY, compact.id);
-    await idbSet(ACTIVE_PROJECT_KEY, compact);
+export async function saveProjectToStore(
+  project: QuizProject,
+  options?: { setAsActive?: boolean }
+): Promise<void> {
+  const setAsActive = options?.setAsActive ?? true;
+  const snapshot = deepCloneProject(project);
+  return enqueueStoreOp(async () => {
+    try {
+      const stamped: QuizProject = {
+        ...snapshot,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        updatedAt: Date.now(),
+      };
+      const compact = await offloadProjectMediaBlobs(stamped);
+      await writeIsolatedProjectRecord(compact);
+      if (setAsActive) {
+        await idbSet(ACTIVE_PROJECT_ID_KEY, compact.id);
+        await idbSet(ACTIVE_PROJECT_KEY, compact);
+      }
 
-    const existing = (await idbGet<ProjectSummary[]>(LIBRARY_INDEX_KEY)) ?? [];
-    const summary = toSummary(compact);
-    const nextIndex = [
-      summary,
-      ...existing.filter((item) => item.id !== compact.id),
-    ].slice(0, 50);
-    await idbSet(LIBRARY_INDEX_KEY, nextIndex);
-  } catch {
-    // Ignore storage quota or private browsing errors gracefully
-  }
+      const existing = (await idbGet<ProjectSummary[]>(LIBRARY_INDEX_KEY)) ?? [];
+      const summary = toSummary(compact);
+      const nextIndex = [
+        summary,
+        ...existing.filter((item) => item.id !== compact.id),
+      ].sort((a, b) => b.updatedAt - a.updatedAt);
+      await idbSet(LIBRARY_INDEX_KEY, nextIndex);
+    } catch {
+      // Ignore storage quota or private browsing errors gracefully
+    }
+  });
 }
 
 export async function saveProjectsToLibraryBatch(projects: QuizProject[]): Promise<void> {
   if (!Array.isArray(projects) || projects.length === 0) return;
-  try {
-    const existing = (await idbGet<ProjectSummary[]>(LIBRARY_INDEX_KEY)) ?? [];
-    const batchSummaries: ProjectSummary[] = [];
-    const batchIds = new Set<string>();
-    const now = Date.now();
+  const clonedList = projects.map((p) => deepCloneProject(p));
+  return enqueueStoreOp(async () => {
+    try {
+      const existing = (await idbGet<ProjectSummary[]>(LIBRARY_INDEX_KEY)) ?? [];
+      const batchSummaries: ProjectSummary[] = [];
+      const batchIds = new Set<string>();
+      const now = Date.now();
 
-    for (let i = 0; i < projects.length; i++) {
-      const p = projects[i];
-      const stamped: QuizProject = {
-        ...p,
-        schemaVersion: CURRENT_SCHEMA_VERSION,
-        updatedAt: now + (projects.length - i),
-      };
-      const compact = await offloadProjectMediaBlobs(stamped);
-      await idbSet(`${PROJECT_ITEM_PREFIX}${compact.id}`, compact);
-      batchSummaries.push(toSummary(compact));
-      batchIds.add(compact.id);
+      for (let i = 0; i < clonedList.length; i++) {
+        const p = clonedList[i];
+        const stamped: QuizProject = {
+          ...p,
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          updatedAt: now + (clonedList.length - i),
+        };
+        const compact = await offloadProjectMediaBlobs(stamped);
+        await writeIsolatedProjectRecord(compact);
+        batchSummaries.push(toSummary(compact));
+        batchIds.add(compact.id);
+      }
+
+      const nextIndex = [
+        ...batchSummaries,
+        ...existing.filter((item) => !batchIds.has(item.id)),
+      ].sort((a, b) => b.updatedAt - a.updatedAt);
+      await idbSet(LIBRARY_INDEX_KEY, nextIndex);
+    } catch {
+      // Ignore storage errors gracefully
     }
-
-    const nextIndex = [
-      ...batchSummaries,
-      ...existing.filter((item) => !batchIds.has(item.id)),
-    ].slice(0, 50);
-    await idbSet(LIBRARY_INDEX_KEY, nextIndex);
-  } catch {
-    // Ignore storage errors gracefully
-  }
+  });
 }
 
 export async function applyThemeToLibraryProjectsBatch(

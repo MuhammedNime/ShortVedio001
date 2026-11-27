@@ -835,7 +835,15 @@ function makeCloudSafeProjectJson(project: QuizProject): {
   }
 
   const audioCopy = { ...project.audio };
-  for (const key of Object.keys(audioCopy) as Array<keyof typeof audioCopy>) {
+  const slotKeys: Array<Exclude<keyof typeof audioCopy, 'ambient'>> = [
+    'questionEnter',
+    'optionEnter',
+    'countdownTick',
+    'suspense',
+    'correctReveal',
+    'bgMusic',
+  ];
+  for (const key of slotKeys) {
     const slot = audioCopy[key];
     if (slot?.customDataUrl) {
       const safeUrl = stripHeavyAsset(slot.customDataUrl);
@@ -843,6 +851,12 @@ function makeCloudSafeProjectJson(project: QuizProject): {
         ? { ...slot, customDataUrl: safeUrl }
         : { ...slot, customDataUrl: undefined, sourceType: 'builtin' };
     }
+  }
+  if (audioCopy.ambient?.customDataUrl) {
+    const safeUrl = stripHeavyAsset(audioCopy.ambient.customDataUrl);
+    audioCopy.ambient = safeUrl
+      ? { ...audioCopy.ambient, customDataUrl: safeUrl }
+      : { ...audioCopy.ambient, customDataUrl: undefined, sourceType: 'builtin' };
   }
 
   const safeSlides = project.slides.slice(0, 50).map((s) => {

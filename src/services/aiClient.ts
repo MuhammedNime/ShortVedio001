@@ -1568,19 +1568,27 @@ export async function generateSlideVoiceoverSafe(
     answer: slide.voiceover?.answer,
   };
 
-  const consistentStyle =
-    'Clear, steady, articulate Modern Standard Arabic quiz presenter; read only the exact provided text cleanly at a natural pace';
+  const isStoryScene = slide.slideType === 'storyScene';
+  const consistentStyle = isStoryScene
+    ? 'Warm, calm, cinematic Modern Standard Arabic documentary narrator; read only the exact provided text with subtle emotional weight at a natural pace'
+    : 'Clear, steady, articulate Modern Standard Arabic quiz presenter; read only the exact provided text cleanly at a natural pace';
 
   try {
     const spokenQ = getSlideSpokenQuestion(slide);
     if (spokenQ) {
-      onStep?.('جارٍ توليد صوت السؤال...');
+      onStep?.(isStoryScene ? 'جارٍ توليد صوت الراوي للمشهد...' : 'جارٍ توليد صوت السؤال...');
       voiceover.question = await generateTtsClip(
         spokenQ,
         voiceName,
-        'ai-question.wav',
+        isStoryScene ? 'ai-story-scene.wav' : 'ai-question.wav',
         consistentStyle
       );
+    }
+
+    if (isStoryScene) {
+      return {
+        slide: { ...slide, voiceover },
+      };
     }
 
     if (mode === 'full') {
@@ -1783,7 +1791,7 @@ ${summaryLines}
   };
 }
 
-function sanitizeClientSvg(rawSvg: string): string {
+function sanitizeClientSvg(rawSvg: string, defaultViewBox = '0 0 600 450'): string {
   const cleaned = String(rawSvg || '')
     .replace(/<\?xml[\s\S]*?\?>/gi, '')
     .replace(/<!DOCTYPE[\s\S]*?>/gi, '')
@@ -1796,7 +1804,7 @@ function sanitizeClientSvg(rawSvg: string): string {
   if (!match) return '';
   let svg = match[0];
   if (!/viewBox=/i.test(svg)) {
-    svg = svg.replace(/<svg/i, '<svg viewBox="0 0 600 450"');
+    svg = svg.replace(/<svg/i, `<svg viewBox="${defaultViewBox}"`);
   }
   if (!/xmlns=/i.test(svg)) {
     svg = svg.replace(/<svg/i, '<svg xmlns="http://www.w3.org/2000/svg"');
@@ -1804,8 +1812,12 @@ function sanitizeClientSvg(rawSvg: string): string {
   return svg;
 }
 
-async function rasterizeSvgToPngDataUrl(svgString: string): Promise<string> {
-  const safeSvg = sanitizeClientSvg(svgString);
+async function rasterizeSvgToPngDataUrl(
+  svgString: string,
+  targetW = 600,
+  targetH = 450
+): Promise<string> {
+  const safeSvg = sanitizeClientSvg(svgString, `0 0 ${targetW} ${targetH}`);
   if (!safeSvg) {
     throw new Error('صيغة الرسم التوضيحي غير صالحة.');
   }
@@ -1823,13 +1835,13 @@ async function rasterizeSvgToPngDataUrl(svgString: string): Promise<string> {
       image.src = blobUrl;
     });
     const canvas = document.createElement('canvas');
-    canvas.width = 600;
-    canvas.height = 450;
+    canvas.width = targetW;
+    canvas.height = targetH;
     const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) throw new Error('تعذر تهيئة لوحة الرسم.');
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(0, 0, 600, 450);
-    ctx.drawImage(img, 0, 0, 600, 450);
+    ctx.fillStyle = '#090d16';
+    ctx.fillRect(0, 0, targetW, targetH);
+    ctx.drawImage(img, 0, 0, targetW, targetH);
     return canvas.toDataURL('image/png');
   } finally {
     URL.revokeObjectURL(blobUrl);
@@ -1919,6 +1931,286 @@ Return JSON: {"svg": "<svg ...>...</svg>", "title": "..."}`;
   return {
     dataUrl: pngDataUrl,
     imageName: `${(data.title || 'صورة لغز بالذكاء').trim()}.png`,
+  };
+}
+
+export interface GeneratedStoryResult {
+  title: string;
+  hookPhrase: string;
+  slides: QuestionSlide[];
+}
+
+export async function generateStorySceneIllustration(
+  scenePrompt: string,
+  narration?: string,
+  aspectRatio: '9:16' | '16:9' = '9:16'
+): Promise<{ dataUrl: string; imageName: string }> {
+  const cleanPrompt = (scenePrompt || narration || '').trim();
+  if (!cleanPrompt) {
+    throw new AiApiError('اكتب نص المشهد أو الوصف البصري أولاً لتوليد لوحة المشهد.', 400);
+  }
+
+  const isWide = aspectRatio === '16:9';
+  const targetW = isWide ? 1280 : 1080;
+  const targetH = isWide ? 720 : 1920;
+  const vb = `0 0 ${targetW} ${targetH}`;
+
+  if (hasAnyEmbeddedTextAiKeys() && !BUILD_API_BASE) {
+    try {
+      const { GoogleGenAI, ThinkingLevel, Type } = await import('@google/genai');
+      const sys = `You are an atmospheric cinematic backdrop vector artist. Output valid JSON with a layered luminous <svg viewBox="${vb}" xmlns="http://www.w3.org/2000/svg"> illustration using rich sky gradients, stars, light shafts, silhouettes (mountains, dunes, waves, arches, mosque silhouettes). NEVER depict human/prophet faces and NEVER include <text> or <tspan>.`;
+      const prompt = `Scene visual description: ${cleanPrompt}
+${narration ? `Story narration context: ${narration.trim().slice(0, 220)}\n` : ''}
+Create a breathtaking cinematic vector SVG (viewBox="${vb}", ${targetW}x${targetH}) with <defs> gradients and 10-22 atmospheric layered paths/shapes. No <text>, no human/prophet faces.
+Return JSON: {"svg": "<svg ...>...</svg>", "title": "..."}`;
+
+      let parsed: { svg?: string; title?: string } | null = null;
+      if (EMBEDDED_CLIENT_GEMINI_KEYS.length > 0) {
+        const response = await runApkGeminiWithRotation(async (apiKey) => {
+          const ai = new GoogleGenAI({ apiKey });
+          return ai.models.generateContent({
+            model: 'gemini-4-hydrogen',
+            contents: prompt,
+            config: {
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+              systemInstruction: sys,
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  svg: { type: Type.STRING },
+                  title: { type: Type.STRING },
+                },
+                required: ['svg', 'title'],
+              },
+            },
+          });
+        });
+        parsed = extractClientJsonPayload(response.text ?? '{}') as { svg?: string; title?: string };
+      } else {
+        parsed = (await runApkExternalJsonFallback(sys, prompt)) as { svg?: string; title?: string };
+      }
+      const pngDataUrl = await rasterizeSvgToPngDataUrl(parsed?.svg || '', targetW, targetH);
+      return {
+        dataUrl: pngDataUrl,
+        imageName: `${(parsed?.title || 'لوحة مشهد قصصي').trim()}.png`,
+      };
+    } catch (err) {
+      if (err instanceof AiApiError) throw err;
+      throw formatGeminiClientError(err);
+    }
+  }
+
+  const res = await fetchAi('/api/ai/generate-scene-svg', {
+    scenePrompt: cleanPrompt,
+    narration,
+    aspectRatio,
+  });
+
+  const data = await parseJsonSafe<{
+    svg?: string;
+    title?: string;
+    error?: string;
+    quotaExhausted?: boolean;
+  }>(res);
+
+  if (!res.ok || !data.svg) {
+    throw new AiApiError(
+      data.error || 'تعذر توليد لوحة المشهد من الخادم.',
+      res.status,
+      Boolean(data.quotaExhausted)
+    );
+  }
+
+  const pngDataUrl = await rasterizeSvgToPngDataUrl(data.svg, targetW, targetH);
+  return {
+    dataUrl: pngDataUrl,
+    imageName: `${(data.title || 'لوحة مشهد قصصي').trim()}.png`,
+  };
+}
+
+export async function generateAiStorySlides(params: {
+  topic: string;
+  storyMode: 'storyOnly' | 'hybridStoryQuiz';
+  storyCategory: string;
+  sceneCount: number;
+  layoutStyle?: 'cinematicBottom' | 'centerVerse' | 'topCard';
+}): Promise<GeneratedStoryResult> {
+  const cleanTopic = params.topic.trim();
+  if (!cleanTopic) {
+    throw new AiApiError('يرجى كتابة فكرة أو موضوع القصة أولاً.', 400);
+  }
+
+  const safeMode = params.storyMode === 'hybridStoryQuiz' ? 'hybridStoryQuiz' : 'storyOnly';
+  const safeCount = Math.max(2, Math.min(7, Math.round(params.sceneCount || 4)));
+
+  type RawStoryRes = {
+    title?: string;
+    hookPhrase?: string;
+    scenes?: Array<{
+      badgeText?: string;
+      narration?: string;
+      visualScenePrompt?: string;
+    }>;
+    quizSlide?: {
+      badgeText?: string;
+      question?: string;
+      options?: string[];
+      correctIndex?: number;
+      explanationText?: string;
+      explanationSource?: string;
+    };
+    error?: string;
+    quotaExhausted?: boolean;
+  };
+
+  let raw: RawStoryRes;
+
+  if (hasAnyEmbeddedTextAiKeys() && !BUILD_API_BASE) {
+    try {
+      const { GoogleGenAI, ThinkingLevel, Type } = await import('@google/genai');
+      const storySys =
+        'أنت كاتب ومخرج أفلام وثائقية وقصص إسلامية وتاريخية قصيرة باللغة العربية الفصحى المؤثرة والدقيقة. تنسج القصة في مشاهد مترابطة مشوقة مناسبة للشورتس والريلز.';
+      const hybridBlock =
+        safeMode === 'hybridStoryQuiz'
+          ? '\nأضف في النهاية حقل quizSlide بسؤال تفاعلي حول القصة (4 خيارات وcorrectIndex من 0 إلى 3 وexplanationText وexplanationSource).'
+          : '';
+      const prompt = `الموضوع: "${cleanTopic}"
+التصنيف: ${params.storyCategory}
+عدد المشاهد السردية: ${safeCount} مشاهد متسلسلة.${hybridBlock}
+لكل مشهد: badgeText (مثل المشهد ١), narration (14-26 كلمة عربية فصحى مؤثرة مناسبة للتعليق الصوتي), visualScenePrompt (وصف بصري جوي بالإنجليزية بدون وجوه أنبياء أو أشخاص).
+أضف title و hookPhrase.
+أرجع JSON Object فقط.`;
+
+      if (EMBEDDED_CLIENT_GEMINI_KEYS.length > 0) {
+        const response = await runApkGeminiWithRotation(async (apiKey) => {
+          const ai = new GoogleGenAI({ apiKey });
+          return ai.models.generateContent({
+            model: 'gemini-4-hydrogen',
+            contents: prompt,
+            config: {
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+              systemInstruction: storySys,
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  hookPhrase: { type: Type.STRING },
+                  scenes: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        badgeText: { type: Type.STRING },
+                        narration: { type: Type.STRING },
+                        visualScenePrompt: { type: Type.STRING },
+                      },
+                      required: ['badgeText', 'narration', 'visualScenePrompt'],
+                    },
+                  },
+                  ...(safeMode === 'hybridStoryQuiz'
+                    ? {
+                        quizSlide: {
+                          type: Type.OBJECT,
+                          properties: {
+                            badgeText: { type: Type.STRING },
+                            question: { type: Type.STRING },
+                            options: { type: Type.ARRAY, items: { type: Type.STRING } },
+                            correctIndex: { type: Type.INTEGER },
+                            explanationText: { type: Type.STRING },
+                            explanationSource: { type: Type.STRING },
+                          },
+                          required: ['question', 'options', 'correctIndex'],
+                        },
+                      }
+                    : {}),
+                },
+                required:
+                  safeMode === 'hybridStoryQuiz'
+                    ? ['title', 'hookPhrase', 'scenes', 'quizSlide']
+                    : ['title', 'hookPhrase', 'scenes'],
+              },
+            },
+          });
+        });
+        raw = extractClientJsonPayload(response.text ?? '{}') as RawStoryRes;
+      } else {
+        raw = (await runApkExternalJsonFallback(storySys, prompt)) as RawStoryRes;
+      }
+    } catch (err) {
+      if (err instanceof AiApiError) throw err;
+      throw formatGeminiClientError(err);
+    }
+  } else {
+    const res = await fetchAi('/api/ai/generate-story', {
+      topic: cleanTopic,
+      storyMode: safeMode,
+      storyCategory: params.storyCategory,
+      sceneCount: safeCount,
+    });
+    const data = await parseJsonSafe<RawStoryRes>(res);
+    if (!res.ok || !Array.isArray(data.scenes) || data.scenes.length === 0) {
+      throw new AiApiError(
+        data.error || 'تعذر توليد القصة من الخادم.',
+        res.status,
+        Boolean(data.quotaExhausted)
+      );
+    }
+    raw = data;
+  }
+
+  const now = Date.now();
+  const scenes = (Array.isArray(raw.scenes) ? raw.scenes : [])
+    .filter((s) => String(s?.narration || '').trim().length >= 5)
+    .slice(0, 7);
+
+  if (scenes.length === 0) {
+    throw new AiApiError('لم يتم توليد مشاهد صالحة، جرّب صياغة الموضوع مجدداً.', 422);
+  }
+
+  const slides: QuestionSlide[] = scenes.map((sc, idx) => ({
+    id: `story-${now}-${idx}`,
+    slideType: 'storyScene',
+    category: 'islamic',
+    badgeText: String(sc.badgeText || `المشهد ${idx + 1}`).trim(),
+    question: String(sc.narration || '').trim(),
+    storyVisualPrompt: String(sc.visualScenePrompt || '').trim(),
+    storyLayoutStyle: params.layoutStyle || 'cinematicBottom',
+    options: ['', '', '', ''],
+    correctIndex: 0,
+    explanationText: '',
+  }));
+
+  if (safeMode === 'hybridStoryQuiz' && raw.quizSlide?.question) {
+    const opts = Array.isArray(raw.quizSlide.options)
+      ? raw.quizSlide.options.map((o) => String(o || '').trim()).filter(Boolean)
+      : [];
+    if (opts.length >= 2) {
+      while (opts.length < 4) opts.push('خيار إضافي');
+      const cIdx = Math.max(0, Math.min(3, Math.round(Number(raw.quizSlide.correctIndex) || 0))) as
+        | 0
+        | 1
+        | 2
+        | 3;
+      slides.push({
+        id: `story-quiz-${now}`,
+        slideType: 'multiple',
+        category: 'islamic',
+        badgeText: String(raw.quizSlide.badgeText || 'تحدي القصة ✨').trim(),
+        question: String(raw.quizSlide.question).trim(),
+        options: [opts[0], opts[1], opts[2], opts[3]],
+        correctIndex: cIdx,
+        explanationText: String(raw.quizSlide.explanationText || '').trim(),
+        explanationSource: String(raw.quizSlide.explanationSource || '').trim() || undefined,
+      });
+    }
+  }
+
+  return {
+    title: String(raw.title || cleanTopic).trim(),
+    hookPhrase: String(raw.hookPhrase || scenes[0]?.narration || cleanTopic).trim(),
+    slides,
   };
 }
 

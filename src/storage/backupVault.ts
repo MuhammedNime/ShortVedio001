@@ -1,4 +1,4 @@
-import { QuizProject } from '../types/quiz';
+import { QuizProject, createUniqueId } from '../types/quiz';
 import {
   CustomTemplatePreset,
   getDefaultCustomStyleId,
@@ -76,7 +76,7 @@ export async function restoreFullStudioBackup(
   const isSupportedBackupFormat =
     parsed.format === FULL_BACKUP_FORMAT || parsed.format === LEGACY_BACKUP_FORMAT;
 
-  // Support single-project JSON files seamlessly too
+  // Support single-project JSON files seamlessly without colliding on legacy default IDs
   if (
     !isSupportedBackupFormat &&
     Array.isArray(parsed.slides) &&
@@ -84,7 +84,15 @@ export async function restoreFullStudioBackup(
     parsed.timing
   ) {
     const single = normalizeLoadedProject(parsed as Partial<QuizProject>);
-    await saveProjectToStore(single);
+    if (!parsed.id || parsed.id === 'default-shorts-project') {
+      single.id = createUniqueId('proj');
+    } else {
+      const existing = await idbGet<Partial<QuizProject>>(`project_item_${single.id}`);
+      if (existing) {
+        single.id = createUniqueId('proj');
+      }
+    }
+    await saveProjectToStore(single, { setAsActive: true });
     return {
       restoredProjectsCount: 1,
       restoredPresetsCount: 0,
@@ -118,16 +126,15 @@ export async function restoreFullStudioBackup(
     typeof parsed.activeProjectId === 'string' ? parsed.activeProjectId : '';
   let activeProj = normalizedProjects[0];
 
-  // Save older projects first and active project last so active project stays selected in IndexedDB
   for (const proj of normalizedProjects) {
     if (proj.id === requestedActiveId) {
       activeProj = proj;
       continue;
     }
-    await saveProjectToStore(proj);
+    await saveProjectToStore(proj, { setAsActive: false });
   }
   if (activeProj) {
-    await saveProjectToStore(activeProj);
+    await saveProjectToStore(activeProj, { setAsActive: true });
   }
 
   return {

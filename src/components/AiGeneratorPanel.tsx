@@ -8,6 +8,7 @@ import {
   Cloud,
   Download,
   ExternalLink,
+  Film,
   FolderTree,
   Loader2,
   LogOut,
@@ -33,8 +34,10 @@ import {
   AiVoiceName,
   adviseQuestionBankPlan,
   generateAiQuizSlides,
+  generateAiStorySlides,
   generateSingleTtsClip,
   generateSlideVoiceoverSafe,
+  generateStorySceneIllustration,
 } from '../services/aiClient';
 import {
   CloudSyncMeta,
@@ -75,6 +78,7 @@ import {
   QuestionSlide,
   QuizCategory,
   SlideAudioClip,
+  StoryLayoutStyle,
   TemplateSettings,
 } from '../types/quiz';
 import { isAndroidNativeApp, saveOrDownloadBlob } from '../utils/nativeDownload';
@@ -84,6 +88,7 @@ import { TtsQuotaBanner } from './TtsQuotaBanner';
 
 interface AiGeneratorPanelProps {
   voiceName: AiVoiceName;
+  aspectRatio?: '9:16' | '16:9';
   existingQuestions?: string[];
   vaultRefreshTrigger?: number;
   aiPresenterConfigured?: boolean;
@@ -115,8 +120,25 @@ interface AiGeneratorPanelProps {
   ) => void;
 }
 
-type AiPanelSubTab = 'direct' | 'bank';
+type AiPanelSubTab = 'direct' | 'story' | 'bank';
 type ConsultMsg = { id: string; role: 'user' | 'assistant'; text: string };
+
+const STORY_CATEGORIES = [
+  'قصة إسلامية وعبرة',
+  'قصص الأنبياء',
+  'سيرة الصحابة والتابعين',
+  'تاريخ وحضارة إسلامية',
+  'وثائقي ومعلومات مذهلة',
+];
+
+const STORY_TOPIC_SUGGESTIONS = [
+  'قصة ذي القرنين وبناء السد والعبرة الخالدة',
+  'قصة أصحاب الكهف ومعجزة بقائهم في الكهف',
+  'موقف عظيم لعمر بن الخطاب في العدل والرحمة',
+  'قصة نبي الله يونس في بطن الحوت والدعاء العظيم',
+  'معجزة الإسراء والمعراج في مشاهد مؤثرة',
+  'سر دعاء يفتح أبواب الرزق والفرج من القرآن',
+];
 
 const CATEGORY_SUGGESTIONS: Record<QuizCategory, string[]> = {
   general: [
@@ -217,6 +239,7 @@ const RANDOM_DISCUSSION_AND_QUIZ_IDEAS = [
 
 export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
   voiceName,
+  aspectRatio = '9:16',
   existingQuestions = [],
   vaultRefreshTrigger = 0,
   aiPresenterConfigured = false,
@@ -245,6 +268,12 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
   const [isGenerating, setIsGenerating] = useState(false);
   const [statusText, setStatusText] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [storyMode, setStoryMode] = useState<'storyOnly' | 'hybridStoryQuiz'>('hybridStoryQuiz');
+  const [storyCategory, setStoryCategory] = useState<string>('قصة إسلامية وعبرة');
+  const [storyTopic, setStoryTopic] = useState<string>('');
+  const [storySceneCount, setStorySceneCount] = useState<number>(4);
+  const [storyLayoutStyle, setStoryLayoutStyle] = useState<StoryLayoutStyle>('cinematicBottom');
+  const [storyAutoSceneArt, setStoryAutoSceneArt] = useState<boolean>(true);
   const [pendingAiReview, setPendingAiReview] = useState<{
     slides: QuestionSlide[];
     insertMode: 'append' | 'replace';
@@ -663,6 +692,158 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
     }
   };
 
+  const handleGenerateStory = async (insertMode: 'append' | 'replace') => {
+    const trimmedTopic = (storyTopic || STORY_TOPIC_SUGGESTIONS[0]).trim();
+
+    try {
+      soundEngine.getContext();
+    } catch {
+      // ignore
+    }
+
+    setErrorMsg('');
+    setPendingAiReview(null);
+    setIsGenerating(true);
+    setStatusText(
+      storyMode === 'hybridStoryQuiz'
+        ? 'جارٍ تأليف القصة المشوقة + السؤال التفاعلي...'
+        : 'جارٍ تأليف مشاهد القصة السينمائية بالذكاء...'
+    );
+    window.dispatchEvent(new CustomEvent('shortvedio:presenter-demo', { detail: { pose: 'explain' } }));
+
+    try {
+      const storyRes = await generateAiStorySlides({
+        topic: trimmedTopic,
+        storyMode,
+        storyCategory,
+        sceneCount: storySceneCount,
+        layoutStyle: storyLayoutStyle,
+      });
+
+      let workingSlides: QuestionSlide[] = [...storyRes.slides];
+
+      if (storyAutoSceneArt) {
+        const sceneIndices = workingSlides
+          .map((sl, idx) => (sl.slideType === 'storyScene' ? idx : -1))
+          .filter((idx) => idx >= 0);
+
+        for (let k = 0; k < sceneIndices.length; k++) {
+          const idx = sceneIndices[k];
+          const sl = workingSlides[idx];
+          setStatusText(`جارٍ رسم لوحة المشهد ${k + 1} من ${sceneIndices.length} 🎨...`);
+          try {
+            const art = await generateStorySceneIllustration(
+              sl.storyVisualPrompt || sl.question,
+              sl.question,
+              aspectRatio
+            );
+            workingSlides[idx] = {
+              ...sl,
+              imageDataUrl: art.dataUrl,
+              imageName: art.imageName,
+              imageChallengeMode: 'normal',
+            };
+          } catch {
+            // Keep gradient backdrop gracefully if a single scene art fails
+          }
+        }
+      }
+
+      let quotaWarning: string | undefined;
+      if (withVoice) {
+        const voicedSlides: QuestionSlide[] = [];
+        for (let i = 0; i < workingSlides.length; i++) {
+          if (quotaWarning) {
+            voicedSlides.push(workingSlides[i]);
+            continue;
+          }
+          const slideItem = workingSlides[i];
+          const stepTitle =
+            slideItem.slideType === 'storyScene' ? `سرد المشهد ${i + 1}` : 'السؤال التفاعلي';
+          const res = await generateSlideVoiceoverSafe(
+            slideItem,
+            voiceName,
+            voiceMode,
+            (stepLabel) =>
+              setStatusText(`${stepTitle} (${i + 1}/${workingSlides.length}): ${stepLabel}`)
+          );
+          voicedSlides.push(res.slide);
+          if (res.warning) {
+            quotaWarning = res.warning;
+          }
+        }
+        workingSlides = voicedSlides;
+      }
+
+      let hookPatch: Partial<TemplateSettings>;
+      let hookWarning: string | undefined;
+
+      if (hookEnabled && storyRes.hookPhrase.trim()) {
+        const cleanHook = storyRes.hookPhrase.trim();
+        setHookText(cleanHook);
+        let hookAudioClip: SlideAudioClip | undefined;
+        if (withVoice && !quotaWarning) {
+          try {
+            setStatusText('جارٍ توليد صوت مقدمة القصة...');
+            hookAudioClip = await generateSingleTtsClip(cleanHook, voiceName, 'hook-story.wav');
+          } catch (err) {
+            hookWarning =
+              err instanceof Error
+                ? `تمت إضافة القصة (تعذر تعليق الهوك: ${err.message})`
+                : undefined;
+          }
+        }
+        hookPatch = {
+          showIntroHook: true,
+          introHookTemplateId: selectedHookId || 'custom',
+          introHookText: cleanHook,
+          introHookDuration: hookDuration,
+          introHookSfx: hookSfx,
+          introHookBadge: storyMode === 'hybridStoryQuiz' ? 'قصة وتحدي 🎬' : 'قصة وعبرة ✨',
+          introHookAccentColor: activeHookPreset?.accentColor || '#d4a73a',
+          introFlashTeaser: hookFlashTeaser,
+          ...(hookFlashTeaser
+            ? {
+                introFlashHookText:
+                  hookFlashText.trim() || 'انتظر السؤال في نهاية القصة! 🔥',
+              }
+            : {}),
+          introHookAudio: hookAudioClip,
+        };
+      } else {
+        const hRes = await buildHookTemplatePatch(withVoice && !quotaWarning);
+        hookPatch = hRes.patch;
+        hookWarning = hRes.ttsWarning;
+      }
+
+      const isReligiousStory =
+        storyCategory.includes('إسلام') ||
+        storyCategory.includes('الأنبياء') ||
+        storyCategory.includes('الصحابة');
+      const themePreset: 'islamic' | false =
+        isReligiousStory && autoApplyIslamicTheme ? 'islamic' : false;
+
+      onInsertSlides(
+        workingSlides,
+        insertMode,
+        withVoice || Boolean(hookPatch.showIntroHook),
+        quotaWarning ?? hookWarning,
+        themePreset,
+        hookPatch
+      );
+
+      setStatusText('');
+      window.dispatchEvent(new CustomEvent('shortvedio:presenter-demo', { detail: { pose: 'celebrate' } }));
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'حدث خطأ أثناء توليد القصة، حاول مجدداً.'
+      );
+      setStatusText('');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   const handleConsultAi = async (customMessage?: string) => {
     if (isConsulting || isBatchGenerating) return;
     const msg =
@@ -956,37 +1137,50 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
           </button>
         )}
 
-        <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-[var(--surface)] border border-[var(--pline)]">
+        <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-[var(--surface)] border border-[var(--pline)]">
           <button
             type="button"
             disabled={isGenerating || isBatchGenerating}
             onClick={() => setSubTab('direct')}
-            className={`flex items-center justify-center gap-1.5 py-2 px-2 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+            className={`flex items-center justify-center gap-1 py-2 px-1.5 rounded-lg text-[11px] font-bold transition-colors whitespace-nowrap cursor-pointer ${
               subTab === 'direct'
                 ? 'bg-[#00B050] text-white'
                 : 'text-[var(--pmuted)] hover:text-[var(--ptxt)]'
             }`}
           >
             <Sparkles className="w-3.5 h-3.5 shrink-0" />
-            <span>توليد مباشر</span>
+            <span>مسابقات</span>
+          </button>
+          <button
+            type="button"
+            disabled={isGenerating || isBatchGenerating}
+            onClick={() => setSubTab('story')}
+            className={`flex items-center justify-center gap-1 py-2 px-1.5 rounded-lg text-[11px] font-bold transition-colors whitespace-nowrap cursor-pointer ${
+              subTab === 'story'
+                ? 'bg-[#00B050] text-white'
+                : 'text-[var(--pmuted)] hover:text-[var(--ptxt)]'
+            }`}
+          >
+            <Film className="w-3.5 h-3.5 shrink-0" />
+            <span>قصص وهجين 🎬</span>
           </button>
           <button
             type="button"
             disabled={isGenerating}
             onClick={() => setSubTab('bank')}
-            className={`flex items-center justify-center gap-1.5 py-2 px-2 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+            className={`flex items-center justify-center gap-1 py-2 px-1.5 rounded-lg text-[11px] font-bold transition-colors whitespace-nowrap cursor-pointer ${
               subTab === 'bank'
                 ? 'bg-[#00B050] text-white'
                 : 'text-[var(--pmuted)] hover:text-[var(--ptxt)]'
             }`}
           >
             <Brain className="w-3.5 h-3.5 shrink-0" />
-            <span>بنك الذاكرة والمستشار</span>
+            <span>بنك الذاكرة</span>
           </button>
         </div>
 
         {/* Target Folder Picker for Saving Generated Questions */}
-        {bankFolders.length > 0 && (
+        {subTab !== 'story' && bankFolders.length > 0 && (
           <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-[var(--surface)] border border-[var(--pline)]">
             <span className="text-[11px] font-bold text-[var(--pmuted)] whitespace-nowrap">
               حفظ في مجلد:
@@ -1008,110 +1202,113 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
         )}
       </div>
 
-      {/* Category Selector (Shared across both Direct & Memory Bank) */}
-      <div className="flex flex-col gap-1.5 p-2.5 rounded-xl bg-[var(--surface)] border border-[var(--pline)]">
-        <div className="flex items-center justify-between text-[11px]">
-          <span className="font-bold text-[var(--ptxt)]">المجال / التصنيف المطلوب:</span>
-          <span className="text-[#00B050] dark:text-[#6ee7b7] font-bold">
-            {selectedCategoryMeta.emoji} {selectedCategoryMeta.label}
-          </span>
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-1">
-          {QUIZ_CATEGORIES.map((cat) => {
-            const active = selectedCategory === cat.id;
-            const catCount = bankStats?.byCategory?.[cat.id]?.total ?? 0;
-            return (
-              <button
-                key={cat.id}
-                type="button"
-                disabled={isGenerating || isBatchGenerating}
-                onClick={() => handleSelectCategory(cat.id)}
-                className={`flex items-center justify-between gap-1 px-2 py-1.5 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer ${
-                  active
-                    ? 'bg-[#00B050]/18 border-[#00B050] text-[#00B050] dark:text-[#6ee7b7]'
-                    : 'bg-[var(--panel)] border-[var(--pline)] text-[var(--pmuted)] hover:text-[var(--ptxt)]'
-                }`}
-              >
-                <span className="truncate">
-                  {cat.emoji} {cat.label}
+      {/* Category Selector & Content Mode Switch (Quiz / Bank tabs) */}
+      {subTab !== 'story' && (
+        <>
+          <div className="flex flex-col gap-1.5 p-2.5 rounded-xl bg-[var(--surface)] border border-[var(--pline)]">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="font-bold text-[var(--ptxt)]">المجال / التصنيف المطلوب:</span>
+              <span className="text-[#00B050] dark:text-[#6ee7b7] font-bold">
+                {selectedCategoryMeta.emoji} {selectedCategoryMeta.label}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-1">
+              {QUIZ_CATEGORIES.map((cat) => {
+                const active = selectedCategory === cat.id;
+                const catCount = bankStats?.byCategory?.[cat.id]?.total ?? 0;
+                return (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    disabled={isGenerating || isBatchGenerating}
+                    onClick={() => handleSelectCategory(cat.id)}
+                    className={`flex items-center justify-between gap-1 px-2 py-1.5 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer ${
+                      active
+                        ? 'bg-[#00B050]/18 border-[#00B050] text-[#00B050] dark:text-[#6ee7b7]'
+                        : 'bg-[var(--panel)] border-[var(--pline)] text-[var(--pmuted)] hover:text-[var(--ptxt)]'
+                    }`}
+                  >
+                    <span className="truncate">
+                      {cat.emoji} {cat.label}
+                    </span>
+                    {catCount > 0 && (
+                      <span className="font-mono-nums text-[9px] opacity-80 shrink-0">
+                        {catCount}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 p-1 rounded-xl bg-[var(--surface)] border border-[var(--pline)]">
+              {(
+                [
+                  { id: 'general', label: 'ثقافة (4 خيارات)', icon: 'sparkles' },
+                  { id: 'multiple3', label: '3 خيارات 🎯', icon: 'none' },
+                  { id: 'trueFalse', label: 'صح أم خطأ ✓✗', icon: 'none' },
+                  { id: 'clues', label: '3 تلميحات 🔍', icon: 'none' },
+                  { id: 'versus', label: 'مقارنة VS ⚡', icon: 'none' },
+                  { id: 'math', label: 'رياضيات 🧮', icon: 'calc' },
+                ] as const
+              ).map((modeBtn) => {
+                const active = contentType === modeBtn.id;
+                return (
+                  <button
+                    key={modeBtn.id}
+                    type="button"
+                    disabled={isGenerating || isBatchGenerating}
+                    onClick={() => {
+                      setContentType(modeBtn.id);
+                      if (modeBtn.id === 'math') {
+                        setSelectedCategory('math');
+                      }
+                    }}
+                    className={`flex items-center justify-center gap-1 py-2 px-1.5 rounded-lg text-[11px] font-bold transition-colors whitespace-nowrap cursor-pointer ${
+                      active
+                        ? 'bg-[#00B050] text-white'
+                        : 'text-[var(--pmuted)] hover:text-[var(--ptxt)] hover:bg-[var(--panel)]'
+                    }`}
+                  >
+                    {modeBtn.icon === 'sparkles' && <Sparkles className="w-3.5 h-3.5 shrink-0" />}
+                    {modeBtn.icon === 'calc' && <Calculator className="w-3.5 h-3.5 shrink-0" />}
+                    <span>{modeBtn.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {(contentType === 'math' || selectedCategory === 'math') && (
+              <label className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#00B050]/10 border border-[#00B050]/35 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoApplyMathTheme}
+                  onChange={(e) => setAutoApplyMathTheme(e.target.checked)}
+                  className="w-4 h-4 accent-[#00B050] rounded cursor-pointer"
+                />
+                <span className="text-[11px] font-bold text-[#00B050] dark:text-[#6ee7b7]">
+                  تطبيق خلفية سبورة الرياضيات وكشف (3 حمر + أخضر) تلقائياً
                 </span>
-                {catCount > 0 && (
-                  <span className="font-mono-nums text-[9px] opacity-80 shrink-0">
-                    {catCount}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Content Mode Switch */}
-      <div className="flex flex-col gap-2">
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 p-1 rounded-xl bg-[var(--surface)] border border-[var(--pline)]">
-          {(
-            [
-              { id: 'general', label: 'ثقافة (4 خيارات)', icon: 'sparkles' },
-              { id: 'multiple3', label: '3 خيارات 🎯', icon: 'none' },
-              { id: 'trueFalse', label: 'صح أم خطأ ✓✗', icon: 'none' },
-              { id: 'clues', label: '3 تلميحات 🔍', icon: 'none' },
-              { id: 'versus', label: 'مقارنة VS ⚡', icon: 'none' },
-              { id: 'math', label: 'رياضيات 🧮', icon: 'calc' },
-            ] as const
-          ).map((modeBtn) => {
-            const active = contentType === modeBtn.id;
-            return (
-              <button
-                key={modeBtn.id}
-                type="button"
-                disabled={isGenerating || isBatchGenerating}
-                onClick={() => {
-                  setContentType(modeBtn.id);
-                  if (modeBtn.id === 'math') {
-                    setSelectedCategory('math');
-                  }
-                }}
-                className={`flex items-center justify-center gap-1 py-2 px-1.5 rounded-lg text-[11px] font-bold transition-colors whitespace-nowrap cursor-pointer ${
-                  active
-                    ? 'bg-[#00B050] text-white'
-                    : 'text-[var(--pmuted)] hover:text-[var(--ptxt)] hover:bg-[var(--panel)]'
-                }`}
-              >
-                {modeBtn.icon === 'sparkles' && <Sparkles className="w-3.5 h-3.5 shrink-0" />}
-                {modeBtn.icon === 'calc' && <Calculator className="w-3.5 h-3.5 shrink-0" />}
-                <span>{modeBtn.label}</span>
-              </button>
-            );
-          })}
-        </div>
-
-        {(contentType === 'math' || selectedCategory === 'math') && (
-          <label className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#00B050]/10 border border-[#00B050]/35 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={autoApplyMathTheme}
-              onChange={(e) => setAutoApplyMathTheme(e.target.checked)}
-              className="w-4 h-4 accent-[#00B050] rounded cursor-pointer"
-            />
-            <span className="text-[11px] font-bold text-[#00B050] dark:text-[#6ee7b7]">
-              تطبيق خلفية سبورة الرياضيات وكشف (3 حمر + أخضر) تلقائياً
-            </span>
-          </label>
-        )}
-        {selectedCategory === 'islamic' && contentType !== 'math' && (
-          <label className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#00B050]/10 border border-[#00B050]/35 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={autoApplyIslamicTheme}
-              onChange={(e) => setAutoApplyIslamicTheme(e.target.checked)}
-              className="w-4 h-4 accent-[#00B050] rounded cursor-pointer"
-            />
-            <span className="text-[11px] font-bold text-[#00B050] dark:text-[#6ee7b7]">
-              تطبيق القالب الإسلامي الذهبي تلقائياً لأسئلة الإسلاميات 🌙
-            </span>
-          </label>
-        )}
-      </div>
+              </label>
+            )}
+            {selectedCategory === 'islamic' && contentType !== 'math' && (
+              <label className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#00B050]/10 border border-[#00B050]/35 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoApplyIslamicTheme}
+                  onChange={(e) => setAutoApplyIslamicTheme(e.target.checked)}
+                  className="w-4 h-4 accent-[#00B050] rounded cursor-pointer"
+                />
+                <span className="text-[11px] font-bold text-[#00B050] dark:text-[#6ee7b7]">
+                  تطبيق القالب الإسلامي الذهبي تلقائياً لأسئلة الإسلاميات 🌙
+                </span>
+              </label>
+            )}
+          </div>
+        </>
+      )}
 
       {/* ================= SUB-TAB 1: DIRECT GENERATION ================= */}
       {subTab === 'direct' && (
@@ -1220,6 +1417,182 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
             </div>
           </div>
         </>
+      )}
+
+      {/* ================= SUB-TAB 1.5: STORIES & HYBRID ================= */}
+      {subTab === 'story' && (
+        <div className="flex flex-col gap-3 p-3.5 rounded-xl bg-[var(--surface)] border border-[#d4a73a]/45">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-col">
+              <span className="text-xs font-extrabold text-[var(--ptxt)]">
+                صانع القصص السينمائية والوضع الهجين 🎬
+              </span>
+              <span className="text-[10.5px] text-[var(--pmuted)]">
+                مشاهد سردية مؤثرة مع حركة كاميرا ولوحات فنية بالذكاء + سؤال ختامي للتعليقات
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-[var(--panel)] border border-[var(--pline)]">
+            <button
+              type="button"
+              disabled={isGenerating}
+              onClick={() => setStoryMode('storyOnly')}
+              className={`py-2 px-2 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                storyMode === 'storyOnly'
+                  ? 'bg-[#00B050] text-white'
+                  : 'text-[var(--pmuted)] hover:text-[var(--ptxt)]'
+              }`}
+            >
+              قصة كاملة 🎬
+            </button>
+            <button
+              type="button"
+              disabled={isGenerating}
+              onClick={() => setStoryMode('hybridStoryQuiz')}
+              className={`py-2 px-2 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                storyMode === 'hybridStoryQuiz'
+                  ? 'bg-[#00B050] text-white'
+                  : 'text-[var(--pmuted)] hover:text-[var(--ptxt)]'
+              }`}
+            >
+              قصة + سؤال تفاعلي 🔥
+            </button>
+          </div>
+
+          <div className="flex flex-wrap gap-1">
+            {STORY_CATEGORIES.map((cat) => {
+              const active = storyCategory === cat;
+              return (
+                <button
+                  key={cat}
+                  type="button"
+                  disabled={isGenerating}
+                  onClick={() => setStoryCategory(cat)}
+                  className={`px-2.5 py-1 rounded-lg text-[10.5px] font-bold border transition-colors cursor-pointer ${
+                    active
+                      ? 'bg-[#00B050]/18 border-[#00B050] text-[#00B050] dark:text-[#6ee7b7]'
+                      : 'bg-[var(--panel)] border-[var(--pline)] text-[var(--pmuted)] hover:text-[var(--ptxt)]'
+                  }`}
+                >
+                  {cat}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-xs font-bold text-[var(--ptxt)]">
+                موضوع القصة أو الحكاية
+              </label>
+              <button
+                type="button"
+                disabled={isGenerating}
+                onClick={() => {
+                  const pool = STORY_TOPIC_SUGGESTIONS.filter((s) => s !== storyTopic);
+                  const pick =
+                    pool[Math.floor(Math.random() * pool.length)] || STORY_TOPIC_SUGGESTIONS[0];
+                  setStoryTopic(pick);
+                }}
+                className="flex items-center gap-1 px-2 py-1 rounded-md bg-[var(--panel)] border border-[var(--pline)] hover:border-[#00B050] text-[10px] font-bold text-[#00B050] cursor-pointer"
+              >
+                <Shuffle className="w-3 h-3" />
+                <span>اقتراح قصة</span>
+              </button>
+            </div>
+            <textarea
+              rows={2}
+              value={storyTopic}
+              disabled={isGenerating}
+              onChange={(e) => setStoryTopic(e.target.value)}
+              placeholder="مثال: قصة أصحاب الكهف بأسلوب مؤثر ورسالة ختامية..."
+              className="w-full px-3 py-2 rounded-xl bg-[var(--panel)] border border-[var(--pline)] focus:border-[#00B050] focus:outline-none text-sm text-[var(--ptxt)] placeholder:text-[var(--pmuted)] resize-none leading-relaxed"
+            />
+            <div className="flex flex-wrap gap-1.5">
+              {STORY_TOPIC_SUGGESTIONS.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  disabled={isGenerating}
+                  onClick={() => setStoryTopic(s)}
+                  className="px-2 py-1 rounded-lg bg-[var(--panel)] hover:border-[var(--gold)] border border-[var(--pline)] text-[10.5px] text-[var(--ptxt)] transition-colors cursor-pointer text-right"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2.5">
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center justify-between text-[11px] text-[var(--ptxt)]">
+                <span>عدد المشاهد</span>
+                <span className="font-mono-nums font-bold text-[#00B050]">{storySceneCount}</span>
+              </div>
+              <div className="grid grid-cols-4 gap-1 p-1 rounded-lg bg-[var(--panel)] border border-[var(--pline)]">
+                {[3, 4, 5, 6].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    disabled={isGenerating}
+                    onClick={() => setStorySceneCount(n)}
+                    className={`py-1 rounded-md text-xs font-mono-nums font-bold cursor-pointer ${
+                      storySceneCount === n
+                        ? 'bg-[#00B050] text-white'
+                        : 'text-[var(--pmuted)] hover:text-[var(--ptxt)]'
+                    }`}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <span className="text-[11px] text-[var(--ptxt)]">تخطيط النص</span>
+              <div className="grid grid-cols-2 gap-1 p-1 rounded-lg bg-[var(--panel)] border border-[var(--pline)]">
+                <button
+                  type="button"
+                  disabled={isGenerating}
+                  onClick={() => setStoryLayoutStyle('cinematicBottom')}
+                  className={`py-1 px-1 rounded-md text-[10.5px] font-bold cursor-pointer ${
+                    storyLayoutStyle === 'cinematicBottom'
+                      ? 'bg-[#00B050] text-white'
+                      : 'text-[var(--pmuted)] hover:text-[var(--ptxt)]'
+                  }`}
+                >
+                  سرد سفلي
+                </button>
+                <button
+                  type="button"
+                  disabled={isGenerating}
+                  onClick={() => setStoryLayoutStyle('centerVerse')}
+                  className={`py-1 px-1 rounded-md text-[10.5px] font-bold cursor-pointer ${
+                    storyLayoutStyle === 'centerVerse'
+                      ? 'bg-[#00B050] text-white'
+                      : 'text-[var(--pmuted)] hover:text-[var(--ptxt)]'
+                  }`}
+                >
+                  بطاقة وسطية
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <label className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-[#00B050]/10 border border-[#00B050]/35 cursor-pointer">
+            <span className="text-[11px] font-bold text-[#00B050] dark:text-[#6ee7b7]">
+              توليد لوحات مشاهد سينمائية تلقائياً بالذكاء 🎨
+            </span>
+            <input
+              type="checkbox"
+              checked={storyAutoSceneArt}
+              disabled={isGenerating}
+              onChange={(e) => setStoryAutoSceneArt(e.target.checked)}
+              className="w-4 h-4 accent-[#00B050] rounded cursor-pointer"
+            />
+          </label>
+        </div>
       )}
 
       {/* ================= SUB-TAB 2: MEMORY VAULT & AI CONSULTANT ================= */}
@@ -2086,6 +2459,34 @@ export const AiGeneratorPanel: React.FC<AiGeneratorPanelProps> = ({
             className="flex items-center justify-center gap-1.5 px-3 py-3 rounded-xl bg-[var(--surface)] hover:border-[var(--gold)] disabled:opacity-50 text-[var(--ptxt)] border border-[var(--pline)] text-xs font-semibold transition-colors cursor-pointer"
           >
             <span>توليد وإضافة للقائمة</span>
+          </button>
+        </div>
+      )}
+
+      {/* Action Buttons for Stories & Hybrid Tab */}
+      {subTab === 'story' && (
+        <div className="grid grid-cols-2 gap-2.5">
+          <button
+            type="button"
+            disabled={isGenerating}
+            onClick={() => void handleGenerateStory('replace')}
+            className="flex items-center justify-center gap-1.5 px-3 py-3 rounded-xl bg-[#00B050] hover:bg-[#00c85b] disabled:opacity-50 text-white text-xs font-bold transition-colors cursor-pointer"
+          >
+            <Film className="w-4 h-4" />
+            <span>
+              {storyMode === 'hybridStoryQuiz'
+                ? 'توليد القصة + السؤال 🎬'
+                : 'توليد القصة كاملة 🎬'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            disabled={isGenerating}
+            onClick={() => void handleGenerateStory('append')}
+            className="flex items-center justify-center gap-1.5 px-3 py-3 rounded-xl bg-[var(--surface)] hover:border-[var(--gold)] disabled:opacity-50 text-[var(--ptxt)] border border-[var(--pline)] text-xs font-semibold transition-colors cursor-pointer"
+          >
+            <span>توليد وإضافة للمشروع</span>
           </button>
         </div>
       )}

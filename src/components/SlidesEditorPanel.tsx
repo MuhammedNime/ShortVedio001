@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  Film,
   ImagePlus,
   Loader2,
   Minus,
@@ -32,6 +33,7 @@ import {
   generateSingleTtsClip,
   generateSlidePuzzleIllustration,
   generateSlideVoiceoverSafe,
+  generateStorySceneIllustration,
   generateVerifiedEvidence,
   prepareArabicTtsFields,
 } from '../services/aiClient';
@@ -50,6 +52,7 @@ import {
   SlideDifficulty,
   SlideOptionImage,
   SlideType,
+  StoryLayoutStyle,
 } from '../types/quiz';
 import {
   getSlideSpokenAnswer,
@@ -63,11 +66,12 @@ import { TtsQuotaBanner } from './TtsQuotaBanner';
 interface SlidesEditorPanelProps {
   slides: QuestionSlide[];
   activeIndex: number;
+  aspectRatio?: '9:16' | '16:9';
   aiVoiceName: AiVoiceName;
   onAiVoiceChange: (voice: AiVoiceName) => void;
   onSelectSlide: (idx: number) => void;
   onUpdateSlide: (idx: number, updated: QuestionSlide) => void;
-  onAddSlide: () => void;
+  onAddSlide: (initialType?: SlideType) => void;
   onDuplicateSlide: (idx: number) => void;
   onDeleteSlide: (idx: number) => void;
   onReorderSlide?: (fromIdx: number, toIdx: number) => void;
@@ -81,6 +85,7 @@ const OPTION_LETTERS = ['أ', 'ب', 'ج', 'د'];
 export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
   slides,
   activeIndex,
+  aspectRatio = '9:16',
   aiVoiceName,
   onAiVoiceChange,
   onSelectSlide,
@@ -112,6 +117,7 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
   if (!activeSlide) return null;
 
   const activeSlideType: SlideType = activeSlide.slideType || 'multiple';
+  const isStorySlide = activeSlideType === 'storyScene';
 
   const handleGenerateSlideAiVoice = async () => {
     if (!activeSlide.question.trim()) return;
@@ -254,16 +260,24 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
 
         const spokenQ = getSlideSpokenQuestion(workingSlide);
         if (spokenQ && !workingSlide.voiceover?.question) {
-          setVoiceStepText(`سؤال ${sIdx + 1}/${slides.length}: السؤال...`);
+          setVoiceStepText(
+            workingSlide.slideType === 'storyScene'
+              ? `مشهد ${sIdx + 1}/${slides.length}: السرد...`
+              : `سؤال ${sIdx + 1}/${slides.length}: السؤال...`
+          );
           const clip = await generateSingleTtsClip(
             spokenQ,
             aiVoiceName,
-            `ai-q-${sIdx + 1}.wav`
+            workingSlide.slideType === 'storyScene'
+              ? `ai-story-${sIdx + 1}.wav`
+              : `ai-q-${sIdx + 1}.wav`
           );
           workingSlide = setClipOnSlide(sIdx, workingSlide, 'question', clip);
           generatedCount += 1;
           await new Promise((r) => setTimeout(r, 240));
         }
+
+        if (workingSlide.slideType === 'storyScene') continue;
 
         if (voiceMode === 'full') {
           const optCount =
@@ -523,12 +537,57 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
     }
   };
 
+  const handleGenerateStorySceneImage = async () => {
+    if (isGeneratingImage) return;
+    const basePrompt = (activeSlide.storyVisualPrompt || activeSlide.question || '').trim();
+    if (!basePrompt) {
+      setVoiceError('اكتب نص المشهد أو الوصف البصري أولاً ثم اضغط توليد لوحة المشهد.');
+      return;
+    }
+    setVoiceError('');
+    setIsGeneratingImage(true);
+    try {
+      const res = await generateStorySceneIllustration(
+        basePrompt,
+        activeSlide.question,
+        aspectRatio
+      );
+      onUpdateSlide(activeIndex, {
+        ...activeSlide,
+        imageDataUrl: res.dataUrl,
+        imageName: res.imageName,
+        imageChallengeMode: 'normal',
+      });
+    } catch (err) {
+      setVoiceError(
+        err instanceof Error ? err.message : 'تعذر توليد لوحة المشهد بالذكاء الاصطناعي.'
+      );
+    } finally {
+      setIsGeneratingImage(false);
+    }
+  };
+
   const removeVoiceover = (target: 'question' | 'answer' | 0 | 1 | 2 | 3) => {
     setClipOnSlide(activeIndex, activeSlide, target, undefined);
   };
 
   const switchSlideType = (nextType: SlideType) => {
     if (activeSlideType === nextType) return;
+    if (nextType === 'storyScene') {
+      onUpdateSlide(activeIndex, {
+        ...activeSlide,
+        slideType: 'storyScene',
+        badgeText: activeSlide.badgeText.startsWith('السؤال')
+          ? `المشهد ${activeIndex + 1}`
+          : activeSlide.badgeText,
+        storyLayoutStyle: activeSlide.storyLayoutStyle || 'cinematicBottom',
+        imageChallengeMode: 'normal',
+        options: ['', '', '', ''],
+        correctIndex: 0,
+      });
+      return;
+    }
+
     const opts = [...activeSlide.options] as [string, string, string, string];
     const isGeneric =
       !opts[0] ||
@@ -614,26 +673,40 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
     <div className="flex flex-col gap-3.5">
       {/* Row 1: Slide Strip */}
       <div className="flex flex-col gap-1.5">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-semibold text-[var(--pmuted)]">
-            شرائح الأسئلة ({slides.length})
+            شرائح الفيديو ({slides.length})
           </span>
-          <button
-            type="button"
-            onClick={() => {
-              triggerHaptic('medium');
-              onAddSlide();
-            }}
-            className="flex items-center gap-1 h-8 px-2.5 rounded-lg bg-[#00B050]/15 hover:bg-[#00B050]/25 text-[#00B050] dark:text-[#6ee7b7] border border-[#00B050]/45 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>سؤال جديد</span>
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                triggerHaptic('medium');
+                onAddSlide('storyScene');
+              }}
+              className="flex items-center gap-1 h-8 px-2.5 rounded-lg bg-[var(--surface)] hover:border-[var(--gold)] text-[var(--gold)] border border-[var(--pline)] text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Film className="w-3.5 h-3.5" />
+              <span>+ مشهد قصصي</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                triggerHaptic('medium');
+                onAddSlide();
+              }}
+              className="flex items-center gap-1 h-8 px-2.5 rounded-lg bg-[#00B050]/15 hover:bg-[#00B050]/25 text-[#00B050] dark:text-[#6ee7b7] border border-[#00B050]/45 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>سؤال جديد</span>
+            </button>
+          </div>
         </div>
 
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
           {slides.map((s, idx) => {
             const isActive = idx === activeIndex;
+            const isSlideStory = s.slideType === 'storyScene';
             return (
               <div
                 key={s.id}
@@ -651,7 +724,7 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
                   }}
                   className="px-2.5 py-1.5 text-xs font-bold whitespace-nowrap cursor-pointer"
                 >
-                  سؤال {idx + 1}
+                  {isSlideStory ? `مشهد ${idx + 1} 🎬` : `سؤال ${idx + 1}`}
                 </button>
                 {slides.length > 1 && (
                   <button
@@ -661,8 +734,8 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
                       triggerHaptic('warning');
                       onDeleteSlide(idx);
                     }}
-                    title={`حذف السؤال ${idx + 1}`}
-                    aria-label={`حذف السؤال ${idx + 1}`}
+                    title={isSlideStory ? `حذف المشهد ${idx + 1}` : `حذف السؤال ${idx + 1}`}
+                    aria-label={isSlideStory ? `حذف المشهد ${idx + 1}` : `حذف السؤال ${idx + 1}`}
                     className={`pl-2 pr-1 py-1.5 transition-colors cursor-pointer ${
                       isActive ? 'text-white/85 hover:text-white' : 'text-[var(--pmuted)] hover:text-rose-400'
                     }`}
@@ -680,7 +753,7 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
       <div className="flex flex-col gap-2 border-t border-[var(--pline)] pt-3">
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-sm font-bold text-[var(--ptxt)] whitespace-nowrap">
-            السؤال {activeIndex + 1}
+            {isStorySlide ? `المشهد القصصي ${activeIndex + 1} 🎬` : `السؤال ${activeIndex + 1}`}
           </h2>
 
           <div className="flex items-center gap-1 shrink-0">
@@ -775,8 +848,8 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
           </div>
         </div>
 
-        {/* 5-Format Segmented Selector */}
-        <div className="grid grid-cols-3 sm:grid-cols-5 gap-1 p-1 rounded-lg bg-[var(--surface)] border border-[var(--pline)]">
+        {/* 6-Format Segmented Selector */}
+        <div className="grid grid-cols-3 gap-1 p-1 rounded-lg bg-[var(--surface)] border border-[var(--pline)]">
           {(
             [
               { id: 'multiple', label: '4 خيارات' },
@@ -784,6 +857,7 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
               { id: 'trueFalse', label: 'صح أم خطأ' },
               { id: 'clues', label: '3 تلميحات' },
               { id: 'versus', label: 'مقارنة VS' },
+              { id: 'storyScene', label: 'مشهد قصصي 🎬' },
             ] as { id: SlideType; label: string }[]
           ).map((fmt) => (
             <button
@@ -935,24 +1009,28 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
         </div>
       )}
 
-      {/* Question Text + MathLive Toggle + Per-Slide Question Audio */}
+      {/* Question / Narration Text + MathLive Toggle + Per-Slide Audio */}
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-bold text-[var(--ptxt)]">نص السؤال</span>
+          <span className="text-xs font-bold text-[var(--ptxt)]">
+            {isStorySlide ? 'نص السرد للمشهد' : 'نص السؤال'}
+          </span>
           <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => setMathTarget((t) => (t === 'question' ? null : 'question'))}
-              title="فتح محرر معادلات الرياضيات (MathLive)"
-              className={`flex items-center gap-1 px-2 py-1 rounded border text-[11px] font-bold cursor-pointer ${
-                mathTarget === 'question'
-                  ? 'bg-[#00B050] text-white border-[#00B050]'
-                  : 'bg-[var(--surface)] hover:border-[var(--gold)] border-[var(--pline)] text-[var(--gold)]'
-              }`}
-            >
-              <Calculator className="w-3 h-3" />
-              <span>معادلة ∑</span>
-            </button>
+            {!isStorySlide && (
+              <button
+                type="button"
+                onClick={() => setMathTarget((t) => (t === 'question' ? null : 'question'))}
+                title="فتح محرر معادلات الرياضيات (MathLive)"
+                className={`flex items-center gap-1 px-2 py-1 rounded border text-[11px] font-bold cursor-pointer ${
+                  mathTarget === 'question'
+                    ? 'bg-[#00B050] text-white border-[#00B050]'
+                    : 'bg-[var(--surface)] hover:border-[var(--gold)] border-[var(--pline)] text-[var(--gold)]'
+                }`}
+              >
+                <Calculator className="w-3 h-3" />
+                <span>معادلة ∑</span>
+              </button>
+            )}
 
             <input
               ref={(el) => {
@@ -979,7 +1057,7 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
                 <button
                   type="button"
                   onClick={() => removeVoiceover('question')}
-                  title="حذف صوت السؤال"
+                  title={isStorySlide ? 'حذف صوت السرد' : 'حذف صوت السؤال'}
                   className="p-1 rounded text-rose-400 hover:bg-rose-500/15 cursor-pointer"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
@@ -991,7 +1069,7 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
                   type="button"
                   disabled={isVoicing}
                   onClick={() => void handleGenerateSingleFieldVoice('question')}
-                  title="توليد صوت ذكي للسؤال"
+                  title={isStorySlide ? 'توليد صوت راوٍ ذكي للمشهد' : 'توليد صوت ذكي للسؤال'}
                   className="p-1.5 rounded bg-[#00B050]/15 hover:bg-[#00B050]/28 text-[#00B050] dark:text-[#6ee7b7] border border-[#00B050]/40 cursor-pointer disabled:opacity-50"
                 >
                   {voicingTarget === 'question' ? (
@@ -1012,7 +1090,7 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
                 <button
                   type="button"
                   onClick={() => fileInputsRef.current['question']?.click()}
-                  title="رفع ملف صوتي للسؤال"
+                  title="رفع ملف صوتي"
                   className="flex items-center gap-1 px-2 py-1 rounded bg-[var(--surface)] hover:border-[var(--gold)] border border-[var(--pline)] text-[var(--ptxt)] text-[11px] font-medium cursor-pointer"
                 >
                   <Upload className="w-3 h-3 text-[#00B050]" />
@@ -1023,15 +1101,19 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
           </div>
         </div>
         <textarea
-          rows={2}
+          rows={isStorySlide ? 3 : 2}
           value={activeSlide.question}
           onChange={(e) =>
             onUpdateSlide(activeIndex, { ...activeSlide, question: e.target.value })
           }
-          placeholder="اكتب السؤال هنا... أو استخدم زر (معادلة ∑) لإدراج الكسور والجذور"
+          placeholder={
+            isStorySlide
+              ? 'اكتب نص السرد أو الحكاية للمشهد...'
+              : 'اكتب السؤال هنا... أو استخدم زر (معادلة ∑) لإدراج الكسور والجذور'
+          }
           className="w-full px-3.5 py-2.5 rounded-lg bg-[var(--surface)] border border-[var(--pline)] focus:border-[#00B050] focus:outline-none text-sm text-[var(--ptxt)] placeholder:text-[var(--pmuted)] resize-none leading-relaxed"
         />
-        {mathTarget === 'question' && (
+        {!isStorySlide && mathTarget === 'question' && (
           <MathFieldInput
             initialText={activeSlide.question}
             mode="insertIntoText"
@@ -1042,7 +1124,130 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
           />
         )}
 
-        {/* Optional Question Illustration Image */}
+        {/* Optional Question Illustration Image OR Story Scene Controls */}
+        {isStorySlide ? (
+          <div className="flex flex-col gap-2.5 p-2.5 rounded-xl bg-[var(--surface)] border border-[var(--pline)]">
+            <input
+              ref={(el) => {
+                fileInputsRef.current['slideImage'] = el;
+              }}
+              type="file"
+              accept="image/*"
+              onChange={(e) => void handleUploadSlideImage(e)}
+              className="hidden"
+            />
+
+            <div className="flex flex-col gap-1">
+              <span className="text-[11px] font-bold text-[var(--ptxt)]">
+                نمط عرض النص على المشهد:
+              </span>
+              <div className="grid grid-cols-3 gap-1 p-0.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)]">
+                {(
+                  [
+                    { id: 'cinematicBottom', label: 'سرد سفلي' },
+                    { id: 'centerVerse', label: 'بطاقة وسطية' },
+                    { id: 'topCard', label: 'علوي' },
+                  ] as { id: StoryLayoutStyle; label: string }[]
+                ).map((st) => {
+                  const active = (activeSlide.storyLayoutStyle || 'cinematicBottom') === st.id;
+                  return (
+                    <button
+                      key={st.id}
+                      type="button"
+                      onClick={() =>
+                        onUpdateSlide(activeIndex, {
+                          ...activeSlide,
+                          storyLayoutStyle: st.id,
+                        })
+                      }
+                      className={`py-1.5 px-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
+                        active
+                          ? 'bg-[#00B050] text-white'
+                          : 'text-[var(--pmuted)] hover:text-[var(--ptxt)]'
+                      }`}
+                    >
+                      {st.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <label className="flex flex-col gap-1">
+              <span className="text-[11px] font-semibold text-[var(--pmuted)]">
+                وصف بصري للرسم (اختياري):
+              </span>
+              <input
+                type="text"
+                value={activeSlide.storyVisualPrompt ?? ''}
+                onChange={(e) =>
+                  onUpdateSlide(activeIndex, {
+                    ...activeSlide,
+                    storyVisualPrompt: e.target.value,
+                  })
+                }
+                placeholder="مثال: صحراء ذهبية وقت الغروب مع قافلة في الأفق وسماء مرصعة بالنجوم..."
+                className="w-full px-3 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] focus:border-[#00B050] focus:outline-none text-xs text-[var(--ptxt)] placeholder:text-[var(--pmuted)]"
+              />
+            </label>
+
+            {activeSlide.imageDataUrl && (
+              <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-[var(--panel)] border border-[var(--pline)]">
+                <div className="flex items-center gap-2 min-w-0">
+                  <img
+                    src={activeSlide.imageDataUrl}
+                    alt="لوحة المشهد"
+                    className="w-10 h-10 rounded-md object-cover border border-[var(--pline)] shrink-0"
+                  />
+                  <span className="text-[11px] text-[var(--ptxt)] truncate">
+                    {activeSlide.imageName || 'لوحة خلفية المشهد'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdateSlide(activeIndex, {
+                      ...activeSlide,
+                      imageDataUrl: undefined,
+                      imageName: undefined,
+                      imageChallengeMode: 'normal',
+                    })
+                  }
+                  title="حذف لوحة المشهد"
+                  className="p-1.5 rounded-md text-rose-400 hover:bg-rose-500/15 cursor-pointer shrink-0"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                disabled={isGeneratingImage}
+                onClick={() => void handleGenerateStorySceneImage()}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#00B050]/15 hover:bg-[#00B050]/25 border border-[#00B050]/45 disabled:opacity-50 text-[11px] font-bold text-[#00B050] dark:text-[#6ee7b7] transition-colors cursor-pointer"
+              >
+                {isGeneratingImage ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="w-3.5 h-3.5" />
+                )}
+                <span>
+                  {isGeneratingImage ? 'جارٍ رسم المشهد...' : 'توليد لوحة مشهد بالذكاء 🎨'}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => fileInputsRef.current['slideImage']?.click()}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[var(--panel)] hover:border-[var(--gold)] border border-[var(--pline)] text-[11px] font-medium text-[var(--ptxt)] transition-colors cursor-pointer"
+              >
+                <ImagePlus className="w-3.5 h-3.5 text-[var(--gold)]" />
+                <span>{activeSlide.imageDataUrl ? 'تغيير الخلفية' : '+ رفع خلفية للمشهد'}</span>
+              </button>
+            </div>
+          </div>
+        ) : (
         <div className="flex items-center justify-between gap-2 pt-1">
           <input
             ref={(el) => {
@@ -1435,9 +1640,11 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
             </div>
           )}
         </div>
+        )}
       </div>
 
       {/* Options / Clues / Versus Cards */}
+      {!isStorySlide && (
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-bold text-[var(--ptxt)]">
@@ -1977,9 +2184,11 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
           )}
         </div>
       </div>
+      )}
 
       {/* Optional Top Badge & Explanation Note + Answer Audio */}
       <div className="flex flex-col gap-3 border-t border-[var(--pline)] pt-3">
+        {!isStorySlide && (
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs font-medium text-[var(--pmuted)]">
@@ -2132,6 +2341,7 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
             </div>
           )}
         </div>
+        )}
 
         {/* Independent Spoken Arabic TTS Pronunciation Editor (Never changes visual text) */}
         <div className="rounded-xl border border-[var(--pline)] bg-[var(--surface)]/75 overflow-hidden">
@@ -2163,19 +2373,29 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
                   onClick={async () => {
                     setIsPreparingTts(true);
                     try {
-                      const ansIdx = activeSlideType === 'clues' ? 3 : activeSlide.correctIndex;
-                      const ansOpt = (activeSlide.options[ansIdx] ?? '').trim();
-                      const res = await prepareArabicTtsFields({
-                        question: activeSlide.question,
-                        options: activeSlide.options,
-                        answer: ansOpt ? `الإجابة الصحيحة هي: ${ansOpt}` : '',
-                      });
-                      onUpdateSlide(activeIndex, {
-                        ...activeSlide,
-                        spokenQuestion: res.spokenQuestion,
-                        spokenOptions: res.spokenOptions,
-                        spokenAnswer: res.spokenAnswer,
-                      });
+                      if (isStorySlide) {
+                        const res = await prepareArabicTtsFields({
+                          question: activeSlide.question,
+                        });
+                        onUpdateSlide(activeIndex, {
+                          ...activeSlide,
+                          spokenQuestion: res.spokenQuestion,
+                        });
+                      } else {
+                        const ansIdx = activeSlideType === 'clues' ? 3 : activeSlide.correctIndex;
+                        const ansOpt = (activeSlide.options[ansIdx] ?? '').trim();
+                        const res = await prepareArabicTtsFields({
+                          question: activeSlide.question,
+                          options: activeSlide.options,
+                          answer: ansOpt ? `الإجابة الصحيحة هي: ${ansOpt}` : '',
+                        });
+                        onUpdateSlide(activeIndex, {
+                          ...activeSlide,
+                          spokenQuestion: res.spokenQuestion,
+                          spokenOptions: res.spokenOptions,
+                          spokenAnswer: res.spokenAnswer,
+                        });
+                      }
                     } finally {
                       setIsPreparingTts(false);
                     }
@@ -2192,55 +2412,61 @@ export const SlidesEditorPanel: React.FC<SlidesEditorPanelProps> = ({
               </div>
 
               <label className="flex flex-col gap-1">
-                <span className="text-[10.5px] text-[var(--pmuted)]">نطق السؤال الصوتي:</span>
+                <span className="text-[10.5px] text-[var(--pmuted)]">
+                  {isStorySlide ? 'نطق السرد الصوتي:' : 'نطق السؤال الصوتي:'}
+                </span>
                 <input
                   type="text"
                   value={activeSlide.spokenQuestion ?? ''}
                   onChange={(e) =>
                     onUpdateSlide(activeIndex, { ...activeSlide, spokenQuestion: e.target.value })
                   }
-                  placeholder={activeSlide.question || 'يُستخدم السؤال الأصلي مع القاموس التلقائي'}
+                  placeholder={activeSlide.question || 'يُستخدم النص الأصلي مع القاموس التلقائي'}
                   className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] text-[var(--ptxt)]"
                 />
               </label>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                {activeSlide.options.map((opt, oIdx) => {
-                  if (!opt.trim() && oIdx >= 2 && (activeSlideType === 'trueFalse' || activeSlideType === 'versus')) {
-                    return null;
-                  }
-                  const currSpoken = activeSlide.spokenOptions?.[oIdx] ?? '';
-                  return (
+              {!isStorySlide && (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    {activeSlide.options.map((opt, oIdx) => {
+                      if (!opt.trim() && oIdx >= 2 && (activeSlideType === 'trueFalse' || activeSlideType === 'versus')) {
+                        return null;
+                      }
+                      const currSpoken = activeSlide.spokenOptions?.[oIdx] ?? '';
+                      return (
+                        <input
+                          key={oIdx}
+                          type="text"
+                          value={currSpoken}
+                          onChange={(e) => {
+                            const nextArr = [
+                              ...(activeSlide.spokenOptions ?? ['', '', '', '']),
+                            ] as [string, string, string, string];
+                            nextArr[oIdx] = e.target.value;
+                            onUpdateSlide(activeIndex, { ...activeSlide, spokenOptions: nextArr });
+                          }}
+                          placeholder={`نطق ${oIdx + 1}: ${opt || '—'}`}
+                          className="px-2.5 py-1 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] text-[var(--ptxt)]"
+                        />
+                      );
+                    })}
+                  </div>
+
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[10.5px] text-[var(--pmuted)]">نطق الإجابة الصحيحة الصوتي:</span>
                     <input
-                      key={oIdx}
                       type="text"
-                      value={currSpoken}
-                      onChange={(e) => {
-                        const nextArr = [
-                          ...(activeSlide.spokenOptions ?? ['', '', '', '']),
-                        ] as [string, string, string, string];
-                        nextArr[oIdx] = e.target.value;
-                        onUpdateSlide(activeIndex, { ...activeSlide, spokenOptions: nextArr });
-                      }}
-                      placeholder={`نطق ${oIdx + 1}: ${opt || '—'}`}
-                      className="px-2.5 py-1 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] text-[var(--ptxt)]"
+                      value={activeSlide.spokenAnswer ?? ''}
+                      onChange={(e) =>
+                        onUpdateSlide(activeIndex, { ...activeSlide, spokenAnswer: e.target.value })
+                      }
+                      placeholder="مثال: الإجابة الصحيحة هي: غَزْوَةُ بَدْرٍ"
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] text-[var(--ptxt)]"
                     />
-                  );
-                })}
-              </div>
-
-              <label className="flex flex-col gap-1">
-                <span className="text-[10.5px] text-[var(--pmuted)]">نطق الإجابة الصحيحة الصوتي:</span>
-                <input
-                  type="text"
-                  value={activeSlide.spokenAnswer ?? ''}
-                  onChange={(e) =>
-                    onUpdateSlide(activeIndex, { ...activeSlide, spokenAnswer: e.target.value })
-                  }
-                  placeholder="مثال: الإجابة الصحيحة هي: غَزْوَةُ بَدْرٍ"
-                  className="w-full px-2.5 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[11px] text-[var(--ptxt)]"
-                />
-              </label>
+                  </label>
+                </>
+              )}
             </div>
           )}
         </div>

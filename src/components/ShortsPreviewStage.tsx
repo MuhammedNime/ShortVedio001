@@ -55,6 +55,7 @@ import {
 } from '../clawatar/quizBridge';
 import {
   AudioSettings,
+  AudioSlotConfig,
   AvatarManualStateId,
   PresenterPoseId,
   QuestionSlide,
@@ -98,7 +99,8 @@ function computeActivePhaseId(
   if (template.showEndCard && t >= contentEnd) return 'end';
   const info = getSlideTimeInfo(t, slides, timing, audio, template);
   if (!info) return null;
-  const { localTime, schedule } = info;
+  const { localTime, schedule, slide } = info;
+  if (slide.slideType === 'storyScene') return 'question';
   if (localTime < schedule.tOptionStarts[0]) return 'question';
   if (localTime < (schedule.tOptionStarts[1] ?? schedule.tThinkingStart)) return 'opt1';
   if (localTime < schedule.tThinkingStart) return 'opt4';
@@ -158,11 +160,11 @@ function applyExactClipDurations(
     return s;
   });
 
-  const syncSlot = <T extends AudioSettings[keyof AudioSettings]>(cfg: T): T => {
+  const syncSlot = (cfg: AudioSlotConfig): AudioSlotConfig => {
     if (cfg.sourceType !== 'custom' || !cfg.customDataUrl) return cfg;
     const exact = soundEngine.getExactDuration(cfg.customDataUrl, cfg.duration ?? 0);
     return exact > 0 && Math.abs(exact - (cfg.duration ?? 0)) > 0.01
-      ? ({ ...cfg, duration: exact } as T)
+      ? { ...cfg, duration: exact }
       : cfg;
   };
 
@@ -173,6 +175,7 @@ function applyExactClipDurations(
     suspense: syncSlot(audio.suspense),
     correctReveal: syncSlot(audio.correctReveal),
     bgMusic: syncSlot(audio.bgMusic),
+    ambient: audio.ambient,
   };
 
   const nextIntroHookAudio = syncClip(template.introHookAudio);
@@ -319,6 +322,7 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
       setIsPlaying(false);
       setDragMode(false);
       soundEngine.stopBgMusic();
+      soundEngine.stopAmbientSound();
       soundEngine.stopAllSfxAndVoice();
     }
   }, [isExporting]);
@@ -583,6 +587,7 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
     if (!isPlaying) {
       resetQuizClawatarTimer();
       soundEngine.stopBgMusic();
+      soundEngine.stopAmbientSound();
       soundEngine.stopAllSfxAndVoice();
       return;
     }
@@ -612,6 +617,11 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
         void soundEngine.startBgMusic(initialSynced.audio.bgMusic).then((src) => {
           if (isStale() && src) {
             soundEngine.stopBgMusic();
+          }
+        });
+        void soundEngine.startAmbientSound(initialSynced.audio.ambient).then((src) => {
+          if (isStale() && src) {
+            soundEngine.stopAmbientSound();
           }
         });
       }
@@ -708,6 +718,7 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
           }
           setIsPlaying(false);
           soundEngine.stopBgMusic();
+          soundEngine.stopAmbientSound();
           soundEngine.stopAllSfxAndVoice();
           return;
         }
@@ -983,6 +994,7 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
       setCurrentTime(timeRef.current);
       pauseAllCachedAiPresenterVideos();
       soundEngine.stopBgMusic();
+      soundEngine.stopAmbientSound();
       soundEngine.stopAllSfxAndVoice();
     };
   }, [isPlaying, onActiveSlideChange]);
@@ -1233,9 +1245,11 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
       const next = !prev;
       if (next) {
         soundEngine.stopBgMusic();
+        soundEngine.stopAmbientSound();
         soundEngine.stopAllSfxAndVoice();
       } else if (isPlayingRef.current) {
         void soundEngine.startBgMusic(audioRef.current.bgMusic);
+        void soundEngine.startAmbientSound(audioRef.current.ambient);
       }
       return next;
     });
@@ -1314,13 +1328,18 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
     audio
   );
 
+  const activeSlideType = slides[activeSlideIndex]?.slideType;
+
   const currentPhaseLabel = (() => {
     if (activePhaseId === 'intro') return 'المقدمة';
     if (activePhaseId === 'end') return 'النهاية';
-    if (activePhaseId === 'question') return 'السؤال';
+    if (activePhaseId === 'question') return activeSlideType === 'storyScene' ? 'المشهد القصصي' : 'السؤال';
     if (activePhaseId === 'opt1' || activePhaseId === 'opt4') {
-      const st = slides[activeSlideIndex]?.slideType;
-      return st === 'clues' ? 'ظهور التلميحات' : st === 'versus' ? 'ظهور الطرفين' : 'ظهور الخيارات';
+      return activeSlideType === 'clues'
+        ? 'ظهور التلميحات'
+        : activeSlideType === 'versus'
+          ? 'ظهور الطرفين'
+          : 'ظهور الخيارات';
     }
     if (activePhaseId === 'timer') return 'العد التنازلي';
     if (activePhaseId === 'suspense') return 'التشويق';
@@ -1328,38 +1347,44 @@ export const ShortsPreviewStage: React.FC<ShortsPreviewStageProps> = ({
     return '';
   })();
 
-  const activeSlideType = slides[activeSlideIndex]?.slideType;
   const phases: {
     id: 'intro' | 'question' | 'opt1' | 'opt4' | 'timer' | 'suspense' | 'reveal' | 'end';
     label: string;
-  }[] = [
-    ...(template.showIntroHook ? [{ id: 'intro' as const, label: 'المقدمة' }] : []),
-    { id: 'question', label: 'السؤال' },
-    {
-      id: 'opt1',
-      label:
-        activeSlideType === 'clues'
-          ? 'تلميح 1'
-          : activeSlideType === 'versus'
-            ? 'طرف 1'
-            : 'خيار 1',
-    },
-    {
-      id: 'opt4',
-      label:
-        activeSlideType === 'trueFalse'
-          ? 'الخياران'
-          : activeSlideType === 'versus'
-            ? 'الطرفان'
-            : activeSlideType === 'clues'
-              ? 'تلميح 3'
-              : 'كل الخيارات',
-    },
-    { id: 'timer', label: 'المؤقت' },
-    ...(timing.suspenseDuration > 0 ? [{ id: 'suspense' as const, label: 'التشويق' }] : []),
-    { id: 'reveal', label: 'الناتج' },
-    ...(template.showEndCard ? [{ id: 'end' as const, label: 'النهاية' }] : []),
-  ];
+  }[] =
+    activeSlideType === 'storyScene'
+      ? [
+          ...(template.showIntroHook ? [{ id: 'intro' as const, label: 'المقدمة' }] : []),
+          { id: 'question', label: 'المشهد' },
+          ...(template.showEndCard ? [{ id: 'end' as const, label: 'النهاية' }] : []),
+        ]
+      : [
+          ...(template.showIntroHook ? [{ id: 'intro' as const, label: 'المقدمة' }] : []),
+          { id: 'question', label: 'السؤال' },
+          {
+            id: 'opt1',
+            label:
+              activeSlideType === 'clues'
+                ? 'تلميح 1'
+                : activeSlideType === 'versus'
+                  ? 'طرف 1'
+                  : 'خيار 1',
+          },
+          {
+            id: 'opt4',
+            label:
+              activeSlideType === 'trueFalse'
+                ? 'الخياران'
+                : activeSlideType === 'versus'
+                  ? 'الطرفان'
+                  : activeSlideType === 'clues'
+                    ? 'تلميح 3'
+                    : 'كل الخيارات',
+          },
+          { id: 'timer', label: 'المؤقت' },
+          ...(timing.suspenseDuration > 0 ? [{ id: 'suspense' as const, label: 'التشويق' }] : []),
+          { id: 'reveal', label: 'الناتج' },
+          ...(template.showEndCard ? [{ id: 'end' as const, label: 'النهاية' }] : []),
+        ];
 
   const isCollapsedMobile = mobileStageMode === 'collapsed';
   const isCompactMobile = mobileStageMode === 'compact';

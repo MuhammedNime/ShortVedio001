@@ -1,12 +1,17 @@
-import React, { useRef } from 'react';
-import { Clock, Music, Play, RotateCcw, Sparkles, Trash2, Upload } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Clock, Music, Play, RotateCcw, Sparkles, Square, Trash2, Upload, Volume2, Waves } from 'lucide-react';
 import { BUILTIN_SFX_OPTIONS, soundEngine } from '../audio/soundEngine';
 import { readFileAsDataUrl } from '../storage/projectStore';
 import {
+  AMBIENT_SOUND_PRESETS,
+  AmbientSoundCategory,
+  AmbientSoundConfig,
+  AmbientSoundId,
   AudioSettings,
   AudioSlotConfig,
   AudioSlotId,
   BuiltInSfxId,
+  DEFAULT_AUDIO,
   DEFAULT_TIMING,
   TemplateSettings,
   TimerPlacement,
@@ -69,12 +74,84 @@ export const AudioTimingPanel: React.FC<AudioTimingPanelProps> = ({
   onTemplateChange,
 }) => {
   const fileInputsRef = useRef<Partial<Record<AudioSlotId, HTMLInputElement | null>>>({});
+  const ambientFileInputRef = useRef<HTMLInputElement | null>(null);
+  const isPanelPreviewingAmbientRef = useRef(false);
+  const [ambientCategory, setAmbientCategory] = useState<AmbientSoundCategory>('all');
+  const [previewingAmbientKey, setPreviewingAmbientKey] = useState<string | null>(null);
+
+  const currentAmbient: AmbientSoundConfig = audio.ambient ?? {
+    ...(DEFAULT_AUDIO.ambient ?? { id: 'none', sourceType: 'builtin', volume: 0.32, autoDuck: true }),
+  };
+
+  useEffect(() => {
+    return () => {
+      if (isPanelPreviewingAmbientRef.current) {
+        soundEngine.stopAmbientSound();
+        isPanelPreviewingAmbientRef.current = false;
+      }
+    };
+  }, []);
 
   const updateSlot = (slotId: AudioSlotId, partial: Partial<AudioSlotConfig>) => {
     onAudioChange({
       ...audio,
       [slotId]: { ...audio[slotId], ...partial },
     });
+  };
+
+  const updateAmbient = (partial: Partial<AmbientSoundConfig>) => {
+    const nextAmbient: AmbientSoundConfig = {
+      ...currentAmbient,
+      ...partial,
+    };
+    onAudioChange({
+      ...audio,
+      ambient: nextAmbient,
+    });
+    return nextAmbient;
+  };
+
+  const handleStopAmbientPreview = () => {
+    soundEngine.stopAmbientSound();
+    isPanelPreviewingAmbientRef.current = false;
+    setPreviewingAmbientKey(null);
+  };
+
+  const handlePreviewAmbient = async (cfg: AmbientSoundConfig, key: string) => {
+    triggerHaptic('light');
+    if (previewingAmbientKey === key) {
+      handleStopAmbientPreview();
+      return;
+    }
+    if (cfg.sourceType !== 'custom' && cfg.id === 'none') {
+      handleStopAmbientPreview();
+      return;
+    }
+    const effectiveCfg: AmbientSoundConfig = {
+      ...cfg,
+      volume: Math.max(0.08, cfg.volume ?? 0.32),
+    };
+    isPanelPreviewingAmbientRef.current = true;
+    setPreviewingAmbientKey(key);
+    await soundEngine.previewAmbientSound(effectiveCfg);
+  };
+
+  const handleUploadAmbientAudio = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const dataUrl = await readFileAsDataUrl(file);
+    const duration = await soundEngine.getAudioDuration(dataUrl);
+    const nextCfg = updateAmbient({
+      sourceType: 'custom',
+      customFileName: file.name,
+      customDataUrl: dataUrl,
+      duration,
+      volume: currentAmbient.volume > 0.01 ? currentAmbient.volume : 0.32,
+    });
+    e.target.value = '';
+    if (previewingAmbientKey) {
+      void handlePreviewAmbient(nextCfg, 'custom');
+    }
   };
 
   const handleUploadAudio = async (
@@ -327,6 +404,289 @@ export const AudioTimingPanel: React.FC<AudioTimingPanelProps> = ({
               </div>
             );
           })}
+        </div>
+      </section>
+
+      {/* 1.5 Ambient Sound Effects Library */}
+      <section className="flex flex-col gap-3 border-t border-[var(--pline)] pt-5">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-bold text-[var(--ptxt)] flex items-center gap-1.5">
+              <Waves className="w-4 h-4 text-[#00B050]" />
+              <span>مكتبة المؤثرات الصوتية المحيطية للأجواء والقصص</span>
+            </h2>
+            <p className="text-[11px] text-[var(--pmuted)] mt-0.5 leading-relaxed">
+              طبقة أجواء سينمائية مستمرة في الخلفية (تعمل في المعاينة والتصدير دون إنترنت) للفيديوهات الدينية والقصصية والمسابقات.
+            </p>
+          </div>
+          {previewingAmbientKey && (
+            <button
+              type="button"
+              onClick={handleStopAmbientPreview}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-rose-400 text-[11px] font-bold whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Square className="w-3 h-3 fill-current" />
+              <span>إيقاف المعاينة</span>
+            </button>
+          )}
+        </div>
+
+        {/* Category filter tabs */}
+        <div className="flex flex-wrap gap-1.5">
+          {[
+            { id: 'all' as AmbientSoundCategory, label: 'الكل' },
+            { id: 'heritage' as AmbientSoundCategory, label: 'ديني وتراثي 🕌' },
+            { id: 'nature' as AmbientSoundCategory, label: 'طبيعة 🌿' },
+            { id: 'crowd' as AmbientSoundCategory, label: 'جمهور ومسابقات 🏟️' },
+          ].map((cat) => {
+            const active = ambientCategory === cat.id;
+            return (
+              <button
+                key={cat.id}
+                type="button"
+                onClick={() => {
+                  triggerHaptic('light');
+                  setAmbientCategory(cat.id);
+                }}
+                className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-[#00B050]/18 border-[#00B050] text-[#00B050] dark:text-[#6ee7b7]'
+                    : 'bg-[var(--surface)] border-[var(--pline)] text-[var(--pmuted)] hover:text-[var(--ptxt)]'
+                }`}
+              >
+                {cat.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* None option + Presets Grid */}
+        <div className="grid grid-cols-1 gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              triggerHaptic('light');
+              handleStopAmbientPreview();
+              updateAmbient({ id: 'none', sourceType: 'builtin' });
+            }}
+            className={`flex items-center justify-between gap-2 px-3 py-2 rounded-xl border text-right transition-colors cursor-pointer ${
+              currentAmbient.sourceType !== 'custom' && currentAmbient.id === 'none'
+                ? 'bg-[#00B050]/15 border-[#00B050] text-[var(--ptxt)]'
+                : 'bg-[var(--surface)] border-[var(--pline)] text-[var(--pmuted)] hover:border-[var(--gold)]'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-base leading-none">🔇</span>
+              <div>
+                <div className="text-xs font-bold text-[var(--ptxt)]">بدون مؤثرات محيطية</div>
+                <div className="text-[10px] text-[var(--pmuted)]">تشغيل الصوتيات والموسيقى المعتادة فقط</div>
+              </div>
+            </div>
+            {currentAmbient.sourceType !== 'custom' && currentAmbient.id === 'none' && (
+              <span className="text-[10px] font-bold text-[#00B050] dark:text-[#6ee7b7]">مُفعّل</span>
+            )}
+          </button>
+
+          {AMBIENT_SOUND_PRESETS.filter(
+            (preset) => ambientCategory === 'all' || preset.category === ambientCategory
+          ).map((preset) => {
+            const isSelected =
+              currentAmbient.sourceType !== 'custom' && currentAmbient.id === preset.id;
+            const isPreviewing = previewingAmbientKey === preset.id;
+            return (
+              <div
+                key={preset.id}
+                onClick={() => {
+                  triggerHaptic('light');
+                  const nextVol =
+                    currentAmbient.id === 'none' || currentAmbient.volume <= 0.01
+                      ? preset.defaultVolume
+                      : currentAmbient.volume;
+                  const nextCfg = updateAmbient({
+                    id: preset.id as AmbientSoundId,
+                    sourceType: 'builtin',
+                    volume: nextVol,
+                  });
+                  if (previewingAmbientKey) {
+                    void handlePreviewAmbient(nextCfg, preset.id);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    const nextVol =
+                      currentAmbient.id === 'none' || currentAmbient.volume <= 0.01
+                        ? preset.defaultVolume
+                        : currentAmbient.volume;
+                    updateAmbient({
+                      id: preset.id as AmbientSoundId,
+                      sourceType: 'builtin',
+                      volume: nextVol,
+                    });
+                  }
+                }}
+                className={`flex items-center justify-between gap-2.5 px-3 py-2.5 rounded-xl border transition-colors cursor-pointer ${
+                  isSelected
+                    ? 'bg-[#00B050]/15 border-[#00B050]'
+                    : 'bg-[var(--surface)] border-[var(--pline)] hover:border-[var(--gold)]'
+                }`}
+              >
+                <div className="flex items-start gap-2.5 min-w-0">
+                  <span className="text-lg leading-none mt-0.5 shrink-0">{preset.emoji}</span>
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-[var(--ptxt)] flex items-center gap-1.5">
+                      <span className="truncate">{preset.label}</span>
+                      {isSelected && (
+                        <span className="text-[10px] font-bold text-[#00B050] dark:text-[#6ee7b7] shrink-0">
+                          ✓ مختار
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-[var(--pmuted)] mt-0.5 leading-snug">
+                      {preset.subtitle}
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const previewCfg: AmbientSoundConfig = {
+                      id: preset.id as AmbientSoundId,
+                      sourceType: 'builtin',
+                      volume:
+                        isSelected && currentAmbient.volume > 0.01
+                          ? currentAmbient.volume
+                          : preset.defaultVolume,
+                      autoDuck: currentAmbient.autoDuck,
+                    };
+                    void handlePreviewAmbient(previewCfg, preset.id);
+                  }}
+                  className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] font-bold whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
+                    isPreviewing
+                      ? 'bg-rose-500/15 border-rose-500/40 text-rose-400'
+                      : 'bg-[var(--panel)] border-[var(--pline)] hover:border-[#00B050] text-[#00B050] dark:text-[#6ee7b7]'
+                  }`}
+                >
+                  {isPreviewing ? (
+                    <>
+                      <Square className="w-3 h-3 fill-current" />
+                      <span>إيقاف</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-3 h-3" />
+                      <span>معاينة</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Custom ambient upload */}
+        <div className="flex items-center gap-2 p-2.5 rounded-xl bg-[var(--surface)] border border-[var(--pline)]">
+          <input
+            ref={ambientFileInputRef}
+            type="file"
+            accept="audio/*"
+            onChange={(e) => void handleUploadAmbientAudio(e)}
+            className="hidden"
+          />
+          <div className="flex-1 flex items-center gap-2 min-w-0 text-xs text-[var(--ptxt)]">
+            <Volume2 className="w-3.5 h-3.5 text-[#00B050] shrink-0" />
+            <span className="truncate">
+              {currentAmbient.sourceType === 'custom' && currentAmbient.customDataUrl
+                ? `✓ صوت محيطي مخصص: ${currentAmbient.customFileName || 'ملف صوتي'}${
+                    currentAmbient.duration ? ` (${currentAmbient.duration.toFixed(1)} ث)` : ''
+                  }`
+                : 'أو ارفع ملف أجواء خاص بك (MP3 · WAV · OGG)'}
+            </span>
+          </div>
+
+          {currentAmbient.sourceType === 'custom' && currentAmbient.customDataUrl && (
+            <>
+              <button
+                type="button"
+                onClick={() => void handlePreviewAmbient(currentAmbient, 'custom')}
+                className="flex items-center gap-1 px-2 py-1.5 rounded-lg bg-[var(--panel)] border border-[var(--pline)] text-[#00B050] dark:text-[#6ee7b7] text-[11px] font-bold shrink-0 cursor-pointer"
+              >
+                {previewingAmbientKey === 'custom' ? (
+                  <Square className="w-3 h-3 fill-current" />
+                ) : (
+                  <Play className="w-3 h-3" />
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (previewingAmbientKey === 'custom') handleStopAmbientPreview();
+                  updateAmbient({
+                    sourceType: 'builtin',
+                    customDataUrl: undefined,
+                    customFileName: undefined,
+                    duration: undefined,
+                  });
+                }}
+                title="إزالة الملف المحيطي المخصص"
+                className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/25 shrink-0 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </>
+          )}
+
+          <button
+            type="button"
+            onClick={() => ambientFileInputRef.current?.click()}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#00B050]/15 hover:bg-[#00B050]/25 text-[#00B050] dark:text-[#6ee7b7] border border-[#00B050]/35 text-[11px] font-bold whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Upload className="w-3 h-3" />
+            <span>{currentAmbient.sourceType === 'custom' ? 'تغيير' : 'رفع ملف'}</span>
+          </button>
+        </div>
+
+        {/* Ambient volume + autoDuck */}
+        <div className="flex flex-col gap-2.5 p-3 rounded-xl bg-[var(--surface)] border border-[var(--pline)]">
+          <label className="flex items-center gap-3">
+            <span className="text-[11px] font-bold text-[var(--ptxt)] whitespace-nowrap">
+              مستوى الصوت المحيطي
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={currentAmbient.volume}
+              onChange={(e) => {
+                const nextVol = parseFloat(e.target.value);
+                const nextCfg = updateAmbient({ volume: nextVol });
+                if (previewingAmbientKey) {
+                  void soundEngine.previewAmbientSound(nextCfg);
+                }
+              }}
+              className="flex-1 h-1"
+            />
+            <span className="font-mono-nums text-[11px] text-[var(--ptxt)] w-9 text-left">
+              {Math.round(currentAmbient.volume * 100)}%
+            </span>
+          </label>
+
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={currentAmbient.autoDuck !== false}
+              onChange={(e) => updateAmbient({ autoDuck: e.target.checked })}
+              className="w-4 h-4 accent-[#00B050] rounded cursor-pointer shrink-0"
+            />
+            <span className="text-[11px] font-semibold text-[var(--ptxt)]">
+              خفض الصوت المحيطي تلقائياً أثناء كلام المذيع
+            </span>
+          </label>
         </div>
       </section>
 

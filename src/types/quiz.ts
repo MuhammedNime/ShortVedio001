@@ -78,7 +78,9 @@ export type ExplanationCardStyle = 'card' | 'pill' | 'minimal';
 
 export type PrizeLadderStyle = 'topStrip' | 'sideColumn';
 
-export type SlideType = 'multiple' | 'multiple3' | 'trueFalse' | 'clues' | 'versus';
+export type StoryLayoutStyle = 'cinematicBottom' | 'centerVerse' | 'topCard';
+
+export type SlideType = 'multiple' | 'multiple3' | 'trueFalse' | 'clues' | 'versus' | 'storyScene';
 export type SlideDifficulty = 'none' | 'easy' | 'medium' | 'hard';
 
 export type QuestionImagePlacement = 'aboveBox' | 'insideBox' | 'belowBox';
@@ -375,6 +377,141 @@ export type AudioSlotId =
   | 'correctReveal'
   | 'bgMusic';
 
+export type AmbientSoundId =
+  | 'none'
+  | 'spiritualPad'
+  | 'oldSouk'
+  | 'desertWind'
+  | 'caravanJourney'
+  | 'documentaryDepth'
+  | 'gentleRain'
+  | 'nightCrickets'
+  | 'forestBirds'
+  | 'oceanWaves'
+  | 'cracklingFire'
+  | 'quizCrowd'
+  | 'stadiumAmbience';
+
+export type AmbientSoundCategory = 'all' | 'heritage' | 'nature' | 'crowd';
+
+export interface AmbientSoundConfig {
+  id: AmbientSoundId;
+  sourceType?: 'builtin' | 'custom';
+  customFileName?: string;
+  customDataUrl?: string;
+  duration?: number;
+  volume: number; // 0 to 1
+  autoDuck?: boolean;
+}
+
+export interface AmbientSoundPresetMeta {
+  id: AmbientSoundId;
+  label: string;
+  subtitle: string;
+  category: Exclude<AmbientSoundCategory, 'all'>;
+  emoji: string;
+  defaultVolume: number;
+}
+
+export const AMBIENT_SOUND_PRESETS: AmbientSoundPresetMeta[] = [
+  {
+    id: 'spiritualPad',
+    label: 'خشوع وأجواء روحانية',
+    subtitle: 'خلفية هادئة ومهيبة تناسب السيرة والقرآن والقصص الدينية',
+    category: 'heritage',
+    emoji: '🕌',
+    defaultVolume: 0.3,
+  },
+  {
+    id: 'oldSouk',
+    label: 'أجواء سوق عربي قديم',
+    subtitle: 'همس تجار وحركة أسواق تراثية بعيدة للقصص التاريخية',
+    category: 'heritage',
+    emoji: '🏺',
+    defaultVolume: 0.34,
+  },
+  {
+    id: 'desertWind',
+    label: 'رياح الصحراء والرمال',
+    subtitle: 'نسيم صحراوي دافئ للغزوات وقصص الأنبياء والصحابة',
+    category: 'heritage',
+    emoji: '🏜️',
+    defaultVolume: 0.34,
+  },
+  {
+    id: 'caravanJourney',
+    label: 'مسير قافلة تاريخية',
+    subtitle: 'رياح هادئة مع إيقاع مسير خفيف على الرمال',
+    category: 'heritage',
+    emoji: '🐪',
+    defaultVolume: 0.34,
+  },
+  {
+    id: 'documentaryDepth',
+    label: 'عمق وثائقي قصصي',
+    subtitle: 'نبض سينمائي هادئ يعزز التركيز والتأمل في السرد',
+    category: 'heritage',
+    emoji: '🎬',
+    defaultVolume: 0.28,
+  },
+  {
+    id: 'gentleRain',
+    label: 'مطر هادئ وقطرات دافئة',
+    subtitle: 'أصوات مطر ناعمة مريحة للتأمل والمعلومات الدينية',
+    category: 'nature',
+    emoji: '🌧️',
+    defaultVolume: 0.32,
+  },
+  {
+    id: 'nightCrickets',
+    label: 'سكون الليل والبادية',
+    subtitle: 'هدوء ليلي عميق مع أصوات الطبيعة الليلية',
+    category: 'nature',
+    emoji: '🌙',
+    defaultVolume: 0.32,
+  },
+  {
+    id: 'forestBirds',
+    label: 'طبيعة وعصافير الصباح',
+    subtitle: 'حفيف أشجار لطيف وزقزقة عصافير بعيدة',
+    category: 'nature',
+    emoji: '🌿',
+    defaultVolume: 0.32,
+  },
+  {
+    id: 'oceanWaves',
+    label: 'أمواج البحر الهادئة',
+    subtitle: 'تلاطم أمواج منتظم يضيف عمقاً وبصراً صوتياً',
+    category: 'nature',
+    emoji: '🌊',
+    defaultVolume: 0.32,
+  },
+  {
+    id: 'cracklingFire',
+    label: 'دفء نار الحطب',
+    subtitle: 'فرقعة نار هادئة مثالية لحكايات السمر والتاريخ',
+    category: 'nature',
+    emoji: '🔥',
+    defaultVolume: 0.34,
+  },
+  {
+    id: 'quizCrowd',
+    label: 'جمهور استوديو المسابقات',
+    subtitle: 'همس وترقّب جمهور التحدي داخل الاستوديو',
+    category: 'crowd',
+    emoji: '🎙️',
+    defaultVolume: 0.35,
+  },
+  {
+    id: 'stadiumAmbience',
+    label: 'حماس الجماهير والملعب',
+    subtitle: 'أجواء جماهيرية واسعة للمسابقات الرياضية والتحديات الكبرى',
+    category: 'crowd',
+    emoji: '🏟️',
+    defaultVolume: 0.32,
+  },
+];
+
 export type BuiltInSfxId =
   | 'none'
   | 'softPop'
@@ -457,6 +594,8 @@ export interface QuestionSlide {
   spokenOptions?: [string, string, string, string];
   spokenAnswer?: string;
   episodeCliffhanger?: string;
+  storyVisualPrompt?: string;
+  storyLayoutStyle?: StoryLayoutStyle;
   voiceover?: SlideVoiceover;
   presenterCues?: PresenterActionCue[];
 }
@@ -470,7 +609,9 @@ export interface AudioSlotConfig {
   volume: number; // 0 to 1
 }
 
-export type AudioSettings = Record<AudioSlotId, AudioSlotConfig>;
+export type AudioSettings = Record<AudioSlotId, AudioSlotConfig> & {
+  ambient?: AmbientSoundConfig;
+};
 
 export interface TemplateSettings {
   aspectRatio: VideoAspectRatio;
@@ -760,6 +901,7 @@ export interface TimingSettings {
   escalatingSpeed?: boolean; // Gradually shorten countdown on later questions
   escalatingStepSeconds?: number; // Reduction per question (e.g. 0.5 or 1.0)
   escalatingMinSeconds?: number; // Minimum floor (e.g. 2.0s)
+  storySceneDuration?: number; // Default duration for storyScene slides without voiceover
 }
 
 export interface QuizProject {
@@ -3683,6 +3825,7 @@ export const DEFAULT_TIMING: TimingSettings = {
   escalatingSpeed: false,
   escalatingStepSeconds: 0.5,
   escalatingMinSeconds: 2.0,
+  storySceneDuration: 4.5,
 };
 
 export const DEFAULT_AUDIO: AudioSettings = {
@@ -3715,6 +3858,12 @@ export const DEFAULT_AUDIO: AudioSettings = {
     sourceType: 'builtin',
     builtinId: 'none',
     volume: 0.25,
+  },
+  ambient: {
+    id: 'none',
+    sourceType: 'builtin',
+    volume: 0.34,
+    autoDuck: true,
   },
 };
 
@@ -3758,7 +3907,13 @@ export const DEFAULT_SLIDES: QuestionSlide[] = CHANNEL_SAMPLE_SLIDES.map((s) => 
   options: [...s.options] as [string, string, string, string],
 }));
 
-function cloneDefaultAudio(): AudioSettings {
+export function createUniqueId(prefix = 'id'): string {
+  const rand = Math.random().toString(36).slice(2, 8);
+  const ts = Date.now().toString(36);
+  return `${prefix}-${ts}-${rand}`;
+}
+
+export function cloneDefaultAudio(): AudioSettings {
   return {
     questionEnter: { ...DEFAULT_AUDIO.questionEnter },
     optionEnter: { ...DEFAULT_AUDIO.optionEnter },
@@ -3766,20 +3921,36 @@ function cloneDefaultAudio(): AudioSettings {
     suspense: { ...DEFAULT_AUDIO.suspense },
     correctReveal: { ...DEFAULT_AUDIO.correctReveal },
     bgMusic: { ...DEFAULT_AUDIO.bgMusic },
+    ambient: DEFAULT_AUDIO.ambient ? { ...DEFAULT_AUDIO.ambient } : {
+      id: 'none',
+      sourceType: 'builtin',
+      volume: 0.34,
+      autoDuck: true,
+    },
   };
 }
 
 export function createDefaultProject(): QuizProject {
   return {
-    id: 'default-shorts-project',
+    id: createUniqueId('proj'),
     name: 'مشروع شورتس القناة',
-    schemaVersion: 8,
+    schemaVersion: 9,
     preferredAiVoice: 'Kore',
-    slides: DEFAULT_SLIDES.map((s) => ({
+    slides: DEFAULT_SLIDES.map((s, idx) => ({
       ...s,
+      id: createUniqueId(`slide-${idx + 1}`),
       options: [...s.options] as [string, string, string, string],
     })),
-    template: { ...DEFAULT_TEMPLATE },
+    template: {
+      ...DEFAULT_TEMPLATE,
+      prizeLadderAmounts: [...(DEFAULT_TEMPLATE.prizeLadderAmounts ?? DEFAULT_PRIZE_LADDER)],
+      presenterCommands: DEFAULT_TEMPLATE.presenterCommands
+        ? { ...DEFAULT_TEMPLATE.presenterCommands }
+        : undefined,
+      avatarAutoBehaviors: DEFAULT_TEMPLATE.avatarAutoBehaviors
+        ? { ...DEFAULT_TEMPLATE.avatarAutoBehaviors }
+        : undefined,
+    },
     timing: { ...DEFAULT_TIMING },
     audio: cloneDefaultAudio(),
     updatedAt: Date.now(),
@@ -3847,6 +4018,29 @@ export function computeSlideSchedule(
   const gap = Math.max(0, timing?.audioEndGap ?? 0.15);
 
   const tQuestionStart = Math.max(0, timing?.introHold ?? 0);
+
+  if (slide?.slideType === 'storyScene') {
+    const fallbackDur = Math.max(2.0, timing?.storySceneDuration ?? 4.5);
+    const slideNarrationDur = slide?.voiceover?.question?.duration ?? 0;
+    const sceneBodyDur =
+      auto && slideNarrationDur > 0
+        ? Math.max(1.8, slideNarrationDur + gap + 0.25)
+        : fallbackDur;
+    const duration = tQuestionStart + sceneBodyDur;
+    return {
+      slideIndex,
+      startTime,
+      endTime: startTime + duration,
+      duration,
+      thinkingDuration: 0,
+      tQuestionStart,
+      tOptionStarts: [duration, duration, duration, duration],
+      tThinkingStart: duration,
+      tTimerExitStart: duration,
+      tSuspenseStart: duration,
+      tRevealStart: duration,
+    };
+  }
 
   const qSlot = audio?.questionEnter;
   const globalQDur =

@@ -101,6 +101,7 @@ import {
   applyChannelThemePreset,
   applyStudioThemePreset,
   createDefaultProject,
+  createUniqueId,
 } from '../types/quiz';
 import { isAndroidNativeApp, saveOrDownloadBlob } from '../utils/nativeDownload';
 import { BatchShortsFactoryModal } from './BatchShortsFactoryModal';
@@ -131,6 +132,7 @@ const SLIDE_TYPE_LABELS: Record<SlideType, string> = {
   trueFalse: 'صح أم خطأ',
   clues: '3 تلميحات',
   versus: 'مقارنة VS',
+  storyScene: 'مشهد قصصي',
 };
 
 const FOLDER_EMOJIS = ['📁', '🕌', '📖', '🌙', '⭐', '🧮', '📐', '🔬', '🪐', '🌍', '⚽', '🏛️', '💻', '📚', '💬', '💡'];
@@ -680,6 +682,7 @@ export const QuestionBankVaultModal: React.FC<QuestionBankVaultModalProps> = ({
       trueFalse: 'trueFalse',
       clues: 'clues',
       versus: 'versus',
+      storyScene: 'general',
     };
 
     let savedTotal = 0;
@@ -962,7 +965,7 @@ export const QuestionBankVaultModal: React.FC<QuestionBankVaultModalProps> = ({
 
       episodesToSave.push({
         ...baseProj,
-        id: `series-${baseTime}-${ep + 1}`,
+        id: createUniqueId('series'),
         name: `${seriesLabel} — حلقة ${ep + 1}`,
         preferredAiVoice: voiceName,
         slides: epSlides,

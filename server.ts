@@ -1744,6 +1744,271 @@ Return JSON object with fields:
     }
   });
 
+  // Generate Cinematic Story Scenes (and optional closing interactive quiz slide for Hybrid Story+Quiz mode)
+  app.post('/api/ai/generate-story', async (req, res) => {
+    try {
+      const { topic, storyMode, storyCategory, sceneCount } = req.body as {
+        topic?: string;
+        storyMode?: 'storyOnly' | 'hybridStoryQuiz';
+        storyCategory?: string;
+        sceneCount?: number;
+      };
+
+      const cleanTopic = String(topic || '').trim();
+      if (!cleanTopic) {
+        res.status(400).json({ error: 'يرجى كتابة موضوع القصة أو العبرة أولاً.' });
+        return;
+      }
+
+      const safeMode = storyMode === 'hybridStoryQuiz' ? 'hybridStoryQuiz' : 'storyOnly';
+      const safeScenes = Math.max(2, Math.min(7, Math.round(Number(sceneCount) || 4)));
+      const catHint = String(storyCategory || 'islamic').trim();
+
+      const storySys =
+        'أنت كاتب ومخرج أفلام وثائقية وقصص إسلامية وتاريخية قصيرة باللغة العربية الفصحى المؤثرة والدقيقة. تلتزم بالمصادر الموثوقة وتنسج القصة في مشاهد مترابطة مشوقة ومناسبة لفيديوهات الشورتس والريلز.';
+
+      const hybridBlock =
+        safeMode === 'hybridStoryQuiz'
+          ? `\nبعد انتهاء المشاهد السردية، أضف حقلاً باسم "quizSlide" يحتوي على سؤال تفاعلي ذكي ومرتبط بأحداث القصة لاختبار انتباه المشاهدين (4 خيارات قصيرة، مع correctIndex من 0 إلى 3، وexplanationText قصير، وexplanationSource إن وُجد).`
+          : `\nلا تُنشئ سؤالاً في النهاية (اجعل quizSlide غير مطلوب).`;
+
+      const storyPrompt = `الموضوع المطلوب: "${cleanTopic}"
+التصنيف / الطابع: ${catHint}
+عدد المشاهد السردية المطلوبة بدقة: ${safeScenes} مشاهد متسلسلة (من التشويق الافتتاحي ثم الحدث ثم الذروة والعبرة).
+${hybridBlock}
+
+إرشادات كتابة كل مشهد:
+- badgeText: عنوان قصير جداً مثل "المشهد ١" أو "بداية القصة" أو "العبرة".
+- narration: جملة أو جملتان باللغة العربية الفصحى السلسة والمؤثرة (14 إلى 26 كلمة فقط للمشهد الواحد) مناسبة للتعليق الصوتي والقراءة السريعة على الشاشة، مع تشكيل خفيف للكلمات الصعبة عند الحاجة.
+- visualScenePrompt: وصف بصري جوي باللغة الإنجليزية (15-25 كلمة) لمشهد فني سينمائي مناسب للرسم بالظلال والأضواء والطبيعة (مثل: سماء صحراوية ليلية مرصعة بالنجوم، أمواج بحر مضيئة، جبل شامخ مع خيوط شمس ذهبية، محراب ومصابيح رمضانية) — تنبيه صارم: ممنوع تماماً طلب رسم وجوه أنبياء أو صحابة أو أشخاص، اعتمد على الطبيعة والعمارة والضوء والظلال فقط.
+- hookPhrase: جملة تشويقية خاطفة لأول ثانية في الفيديو (أقل من 8 كلمات).
+- title: عنوان جذاب للفيديو (أقل من 8 كلمات).
+
+أرجع JSON Object فقط.`;
+
+      type RawStoryPayload = {
+        title?: string;
+        hookPhrase?: string;
+        scenes?: Array<{
+          badgeText?: string;
+          narration?: string;
+          visualScenePrompt?: string;
+        }>;
+        quizSlide?: {
+          badgeText?: string;
+          question?: string;
+          options?: string[];
+          correctIndex?: number;
+          explanationText?: string;
+          explanationSource?: string;
+        };
+      };
+
+      const { data: storyResult, provider: usedProvider } = await runTextJsonAcrossProviders({
+        geminiTask: async (ai, model) => {
+          const response = await ai.models.generateContent({
+            model,
+            contents: storyPrompt,
+            config: {
+              thinkingConfig: {
+                thinkingLevel:
+                  model === 'gemini-3.1-flash-lite'
+                    ? ThinkingLevel.MINIMAL
+                    : ThinkingLevel.LOW,
+              },
+              systemInstruction: storySys,
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  hookPhrase: { type: Type.STRING },
+                  scenes: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        badgeText: { type: Type.STRING },
+                        narration: { type: Type.STRING },
+                        visualScenePrompt: { type: Type.STRING },
+                      },
+                      required: ['badgeText', 'narration', 'visualScenePrompt'],
+                    },
+                  },
+                  ...(safeMode === 'hybridStoryQuiz'
+                    ? {
+                        quizSlide: {
+                          type: Type.OBJECT,
+                          properties: {
+                            badgeText: { type: Type.STRING },
+                            question: { type: Type.STRING },
+                            options: { type: Type.ARRAY, items: { type: Type.STRING } },
+                            correctIndex: { type: Type.INTEGER },
+                            explanationText: { type: Type.STRING },
+                            explanationSource: { type: Type.STRING },
+                          },
+                          required: ['question', 'options', 'correctIndex'],
+                        },
+                      }
+                    : {}),
+                },
+                required:
+                  safeMode === 'hybridStoryQuiz'
+                    ? ['title', 'hookPhrase', 'scenes', 'quizSlide']
+                    : ['title', 'hookPhrase', 'scenes'],
+              },
+            },
+          });
+          return response.text ?? '{}';
+        },
+        externalSystemInstruction: storySys,
+        externalUserPrompt: storyPrompt,
+        parseAndValidate: (payload) => {
+          const raw = (payload && typeof payload === 'object' ? payload : {}) as RawStoryPayload;
+          const rawScenes = Array.isArray(raw.scenes) ? raw.scenes : [];
+          const cleanScenes = rawScenes
+            .map((sc, idx) => ({
+              badgeText: String(sc?.badgeText || `المشهد ${idx + 1}`).trim().slice(0, 36),
+              narration: String(sc?.narration || '').trim(),
+              visualScenePrompt: String(
+                sc?.visualScenePrompt ||
+                  'Atmospheric golden desert dawn with dramatic light rays and dark silhouettes'
+              ).trim(),
+            }))
+            .filter((sc) => sc.narration.length >= 6)
+            .slice(0, 7);
+
+          if (cleanScenes.length === 0) {
+            throw new Error('لم يتمكن الذكاء من توليد مشاهد القصة، حاول مجدداً.');
+          }
+
+          let normalizedQuiz: RawStoryPayload['quizSlide'] | undefined;
+          if (safeMode === 'hybridStoryQuiz' && raw.quizSlide && raw.quizSlide.question) {
+            const opts = Array.isArray(raw.quizSlide.options)
+              ? raw.quizSlide.options.map((o) => String(o || '').trim()).filter(Boolean)
+              : [];
+            if (opts.length >= 2) {
+              while (opts.length < 4) opts.push('خيار إضافي');
+              const cIdx = Math.max(0, Math.min(3, Math.round(Number(raw.quizSlide.correctIndex) || 0)));
+              normalizedQuiz = {
+                badgeText: String(raw.quizSlide.badgeText || 'تحدي القصة ✨').trim().slice(0, 36),
+                question: String(raw.quizSlide.question).trim(),
+                options: opts.slice(0, 4),
+                correctIndex: cIdx,
+                explanationText: String(raw.quizSlide.explanationText || '').trim(),
+                explanationSource: String(raw.quizSlide.explanationSource || '').trim(),
+              };
+            }
+          }
+
+          return {
+            title: String(raw.title || cleanTopic).trim().slice(0, 90),
+            hookPhrase: String(raw.hookPhrase || cleanScenes[0].narration.slice(0, 56)).trim(),
+            scenes: cleanScenes,
+            quizSlide: normalizedQuiz,
+          };
+        },
+      });
+
+      res.json({ ...storyResult, provider: usedProvider });
+    } catch (err) {
+      const formatted = formatGeminiError(err, 'text');
+      res.status(formatted.status).json({
+        error: formatted.message,
+        quotaExhausted: formatted.quotaExhausted,
+      });
+    }
+  });
+
+  // Generate Atmospheric SVG Artwork for a Story Scene
+  app.post('/api/ai/generate-scene-svg', async (req, res) => {
+    try {
+      const { scenePrompt, narration, aspectRatio } = req.body as {
+        scenePrompt?: string;
+        narration?: string;
+        aspectRatio?: '9:16' | '16:9';
+      };
+
+      const cleanPrompt = String(scenePrompt || narration || '').trim();
+      if (!cleanPrompt) {
+        res.status(400).json({ error: 'يرجى كتابة وصف المشهد أولاً.' });
+        return;
+      }
+
+      const isWide = aspectRatio === '16:9';
+      const vb = isWide ? '0 0 1280 720' : '0 0 1080 1920';
+      const W = isWide ? 1280 : 1080;
+      const H = isWide ? 720 : 1920;
+
+      const sceneSys =
+        `You are an atmospheric cinematic backdrop vector artist. Output valid JSON with a layered, luminous <svg viewBox="${vb}" xmlns="http://www.w3.org/2000/svg"> illustration using rich sky/ambient gradients, crescent moon/stars/sunbeams, majestic landscapes (mountains, dunes, waves, arches, mosque silhouettes, clouds, golden light shafts). STRICTLY NEVER depict human/prophet faces and NEVER include <text> or <tspan> elements.`;
+
+      const sceneUserPrompt = `Scene visual description: ${cleanPrompt}
+${narration ? `Story narration context: ${String(narration).trim().slice(0, 220)}\n` : ''}
+Create a breathtaking cinematic vector painting SVG (viewBox="${vb}", ${W}x${H}):
+- Full-bleed <defs> radial and linear gradients creating deep atmospheric mood (dawn gold, midnight indigo, desert amber, starry emerald, etc.).
+- 10 to 24 layered vector shapes (<rect>, <circle>, <ellipse>, <path>, <polygon>) with opacity blends forming foreground silhouettes, mid-ground scenery, and glowing light rays or stars.
+- Respectful & clean: NO faces, NO prophets/companions figures, NO <text>/<tspan>, NO <script>, NO external URLs.
+Return JSON: {"svg": "<svg ...>...</svg>", "title": "وصف قصير للمشهد"}`;
+
+      const { data: sceneSvgResult, provider: usedProvider } = await runTextJsonAcrossProviders({
+        geminiTask: async (ai, model) => {
+          const response = await ai.models.generateContent({
+            model,
+            contents: sceneUserPrompt,
+            config: {
+              thinkingConfig: {
+                thinkingLevel:
+                  model === 'gemini-3.1-flash-lite'
+                    ? ThinkingLevel.MINIMAL
+                    : ThinkingLevel.LOW,
+              },
+              systemInstruction: sceneSys,
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  svg: { type: Type.STRING },
+                  title: { type: Type.STRING },
+                },
+                required: ['svg', 'title'],
+              },
+            },
+          });
+          return response.text ?? '{}';
+        },
+        externalSystemInstruction: sceneSys,
+        externalUserPrompt: `${sceneUserPrompt}\n\nReturn ONLY valid JSON: {"svg": "<svg ...>...</svg>", "title": "..."}`,
+        parseAndValidate: (payload) => {
+          const parsed = (payload && typeof payload === 'object' ? payload : {}) as {
+            svg?: string;
+            title?: string;
+          };
+          const safeSvg = sanitizeSvgPayload(parsed.svg || '');
+          if (!safeSvg) {
+            throw new Error('لم يكتمل توليد لوحة المشهد.');
+          }
+          return {
+            svg: safeSvg,
+            title: String(parsed.title || 'خلفية مشهد قصصي').trim().slice(0, 60),
+          };
+        },
+      });
+
+      res.json({
+        svg: sceneSvgResult.svg,
+        title: sceneSvgResult.title,
+        provider: usedProvider,
+      });
+    } catch (err) {
+      const formatted = formatGeminiError(err, 'text');
+      res.status(formatted.status).json({
+        error: formatted.message,
+        quotaExhausted: formatted.quotaExhausted,
+      });
+    }
+  });
+
   // Prepare Arabic spoken TTS text (preserves exact words & meaning, adds only clarifying diacritics)
   app.post('/api/ai/prepare-tts-text', async (req, res) => {
     try {

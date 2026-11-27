@@ -39,6 +39,23 @@ export function computeActiveCaptionState(
     schedule;
   const slideDur = endTime - startTime;
 
+  if (slide.slideType === 'storyScene') {
+    if (localTime >= tQuestionStart && localTime <= slideDur) {
+      const words = tokenizeCaptionWords(slide.question);
+      if (words.length === 0) return null;
+      const span = Math.max(0.5, slideDur - tQuestionStart - 0.12);
+      const p = Math.max(0, Math.min(0.999, (localTime - tQuestionStart) / span));
+      return {
+        text: words.join(' '),
+        words,
+        activeWordIndex: Math.min(words.length - 1, Math.floor(p * words.length)),
+        phase: 'question',
+        alpha: Math.min(1, (localTime - tQuestionStart) / 0.18),
+      };
+    }
+    return null;
+  }
+
   const optCount =
     slide.slideType === 'trueFalse' || slide.slideType === 'versus'
       ? 2

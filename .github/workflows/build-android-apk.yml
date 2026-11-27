@@ -63,6 +63,12 @@ jobs:
           VITE_GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID || '' }}
         run: npm run build
 
+      - name: Cache Android debug keystore for consistent updates
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore-${{ github.repository_id }}-v1
+
       - name: Initialize & configure Capacitor Android project
         run: |
           if [ ! -d "android" ]; then
@@ -70,13 +76,23 @@ jobs:
           fi
           npx cap sync android
 
-          mkdir -p android/app/src/main/java/com/quizpro/reelsstudio1
-          cp android-native/MainActivity.java android/app/src/main/java/com/quizpro/reelsstudio1/MainActivity.java
+          APP_ID=$(node -e '
+            const fs = require("fs");
+            const c = fs.readFileSync("capacitor.config.ts", "utf8");
+            const m = c.match(/appId:\s*[\x27"]([^\x27"]+)[\x27"]/);
+            console.log(m ? m[1] : "com.quizpro.reelsstudio1");
+          ')
+          APP_PKG_PATH=$(echo "$APP_ID" | tr "." "/")
+          mkdir -p "android/app/src/main/java/$APP_PKG_PATH"
+          sed "s/^package com\.quizpro\.reelsstudio1;/package ${APP_ID};/" android-native/MainActivity.java > "android/app/src/main/java/$APP_PKG_PATH/MainActivity.java"
           mkdir -p android/app/src/main/res/xml
           cp android-native/file_paths.xml android/app/src/main/res/xml/file_paths.xml
 
-          node -e '
+          APP_ID="$APP_ID" RUN_NUM="${{ github.run_number }}" node -e '
             const fs = require("fs");
+            const appId = process.env.APP_ID || "com.quizpro.reelsstudio1";
+            const runNum = parseInt(process.env.RUN_NUM || "1", 10) || 1;
+            const versionCode = 1000 + runNum;
 
             // 1. Patch AndroidManifest.xml with required permissions, optional hardware features, and unique deep-link scheme
             const manifestPath = "android/app/src/main/AndroidManifest.xml";
@@ -90,7 +106,7 @@ jobs:
             if (!m.includes("youtube-auth")) {
               m = m.replace(
                 "</activity>",
-                "            <intent-filter>\n                <action android:name=\"android.intent.action.VIEW\" />\n                <category android:name=\"android.intent.category.DEFAULT\" />\n                <category android:name=\"android.intent.category.BROWSABLE\" />\n                <data android:scheme=\"com.quizpro.reelsstudio1\" android:host=\"youtube-auth\" />\n            </intent-filter>\n        </activity>"
+                `            <intent-filter>\n                <action android:name="android.intent.action.VIEW" />\n                <category android:name="android.intent.category.DEFAULT" />\n                <category android:name="android.intent.category.BROWSABLE" />\n                <data android:scheme="${appId}" android:host="youtube-auth" />\n            </intent-filter>\n        </activity>`
               );
             }
             const manifestAdditions = [
@@ -107,13 +123,21 @@ jobs:
             }
             fs.writeFileSync(manifestPath, m);
 
-            // 2. Patch app/build.gradle with explicit appId, universal ABI, version, and native Gradle signingConfigs
+            // 2. Patch variables.gradle: keep compileSdk 36 for AndroidX, use stable targetSdk 35 for broad OEM compatibility
+            const varsPath = "android/variables.gradle";
+            if (fs.existsSync(varsPath)) {
+              let v = fs.readFileSync(varsPath, "utf8");
+              v = v.replace(/targetSdkVersion\s*=\s*\d+/, "targetSdkVersion = 35");
+              fs.writeFileSync(varsPath, v);
+            }
+
+            // 3. Patch app/build.gradle with explicit appId, universal ABI, monotonic versionCode, and v1+v2 signingConfigs
             const gradlePath = "android/app/build.gradle";
             let g = fs.readFileSync(gradlePath, "utf8");
-            g = g.replace(/namespace\s*=?\s*"[^"]*"/, "namespace = \"com.quizpro.reelsstudio1\"");
-            g = g.replace(/applicationId\s+"[^"]*"/, "applicationId \"com.quizpro.reelsstudio1\"");
-            g = g.replace(/versionCode\s+\d+/, "versionCode ${{ github.run_number }}");
-            g = g.replace(/versionName\s+"[^"]*"/, "versionName \"1.0.${{ github.run_number }}\"");
+            g = g.replace(/namespace\s*=?\s*"[^"]*"/, `namespace = "${appId}"`);
+            g = g.replace(/applicationId\s+"[^"]*"/, `applicationId "${appId}"`);
+            g = g.replace(/versionCode\s+\d+/, `versionCode ${versionCode}`);
+            g = g.replace(/versionName\s+"[^"]*"/, `versionName "1.0.${runNum}"`);
 
             if (!g.includes("splits {")) {
               g = g.replace(
@@ -123,7 +147,7 @@ jobs:
             }
 
             if (!g.includes("signingConfigs")) {
-              const signingBlock = `    signingConfigs {\n        release {\n            if (System.getenv("ANDROID_KEYSTORE_PATH")) {\n                storeFile file(System.getenv("ANDROID_KEYSTORE_PATH"))\n                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")\n                keyAlias System.getenv("ANDROID_KEY_ALIAS")\n                keyPassword System.getenv("ANDROID_KEY_PASSWORD")\n            }\n        }\n    }\n    buildTypes {`;
+              const signingBlock = `    signingConfigs {\n        debug {\n            enableV1Signing = true\n            enableV2Signing = true\n        }\n        release {\n            enableV1Signing = true\n            enableV2Signing = true\n            if (System.getenv("ANDROID_KEYSTORE_PATH")) {\n                storeFile file(System.getenv("ANDROID_KEYSTORE_PATH"))\n                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")\n                keyAlias System.getenv("ANDROID_KEY_ALIAS")\n                keyPassword System.getenv("ANDROID_KEY_PASSWORD")\n            }\n        }\n    }\n    buildTypes {`;
               g = g.replace("    buildTypes {", signingBlock);
               g = g.replace(
                 /buildTypes\s*\{\s*release\s*\{/,
@@ -133,7 +157,7 @@ jobs:
 
             fs.writeFileSync(gradlePath, g);
 
-            // 3. Match adaptive icon background color to new icon
+            // 4. Match adaptive icon background color to app icon
             const bgXmlPath = "android/app/src/main/res/values/ic_launcher_background.xml";
             if (fs.existsSync(bgXmlPath)) {
               let bg = fs.readFileSync(bgXmlPath, "utf8");
@@ -171,16 +195,17 @@ jobs:
         run: |
           mkdir -p release-apks
           cp android/app/build/outputs/apk/debug/app-debug.apk release-apks/quizpro-reels-debug.apk
-          if [ -f "android/app/build/outputs/apk/release/app-release.apk" ]; then
-            cp android/app/build/outputs/apk/release/app-release.apk release-apks/quizpro-reels-release.apk
-          elif [ -f "android/app/build/outputs/apk/release/app-release-unsigned.apk" ]; then
-            cp android/app/build/outputs/apk/release/app-release-unsigned.apk release-apks/quizpro-reels-release-unsigned.apk
+          if [ ! -f "android/app/build/outputs/apk/release/app-release.apk" ]; then
+            echo "ERROR: Signed app-release.apk was not generated!" >&2
+            exit 1
           fi
+          cp android/app/build/outputs/apk/release/app-release.apk release-apks/quizpro-reels-release.apk
 
           SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
           BUILD_TOOLS_DIR="$(ls -d "$SDK_ROOT"/build-tools/* | sort -V | tail -n 1 || true)"
-          if [ -n "$BUILD_TOOLS_DIR" ] && [ -x "$BUILD_TOOLS_DIR/apksigner" ] && [ -f "release-apks/quizpro-reels-release.apk" ]; then
+          if [ -n "$BUILD_TOOLS_DIR" ] && [ -x "$BUILD_TOOLS_DIR/apksigner" ]; then
             "$BUILD_TOOLS_DIR/apksigner" verify --verbose --print-certs release-apks/quizpro-reels-release.apk
+            "$BUILD_TOOLS_DIR/apksigner" verify --verbose --print-certs release-apks/quizpro-reels-debug.apk
           fi
 
       - name: Upload APK Artifact
@@ -208,8 +233,9 @@ jobs:
           name: ${{ steps.release_meta.outputs.name }}
           body: |
             تم بناء تطبيق **استوديو كويز برو (QuizPro Reels Studio)** تلقائياً (الإصدار `1.0.${{ github.run_number }}`):
-            - **`quizpro-reels-release.apk`**: نسخة Release موقّعة جاهزة للتثبيت المباشر على أندرويد بجانب أي تطبيق آخر بدون حذفه.
+            - **`quizpro-reels-release.apk`**: النسخة المعتمدة والموقّعة (v1+v2) للتثبيت المباشر على أندرويد.
             - **`quizpro-reels-debug.apk`**: نسخة Debug للاختبار.
+            > **ملاحظة:** إذا ظهرت رسالة «الحزمة غير متوافقة» عند التثبيت، احذف أي نسخة قديمة مثبتة مسبقاً بنفس المعرّف ثم ثبّت **`quizpro-reels-release.apk`** (ولا تخلط بين نسخة debug و release).
           make_latest: true
           files: |
             release-apks/*.apk

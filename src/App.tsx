@@ -52,6 +52,8 @@ import {
   initYouTubeAuthListener,
 } from './services/youtubeClient';
 import {
+  deepCloneProject,
+  deepCloneSlide,
   loadProjectFromStore,
   normalizeLoadedProject,
   saveProjectToStore,
@@ -64,10 +66,12 @@ import {
   QuestionSlide,
   QuizProject,
   STUDIO_THEME_ORDER,
+  SlideType,
   applyChannelThemePreset,
   applyStudioThemePreset,
   applyThemeBackgroundOnly,
   createDefaultProject,
+  createUniqueId,
   getCanvasDimensions,
   getTotalDuration,
 } from './types/quiz';
@@ -166,9 +170,29 @@ const ApkWebLoginBridge: React.FC<{ onStayInWeb: () => void }> = ({ onStayInWeb 
 
 function buildDefaultPublishKit(proj: QuizProject): YoutubePublishKit {
   const targetSlides = proj.slides;
-  const firstQ = (targetSlides[0]?.question || 'تحدي المعلومات').trim();
+  const storyCount = targetSlides.filter((s) => s.slideType === 'storyScene').length;
+  const isStoryProject = storyCount > 0;
+  const isHybrid = isStoryProject && storyCount < targetSlides.length;
+
+  const firstQ = (targetSlides[0]?.question || (isStoryProject ? 'قصة وعبرة مؤثرة' : 'تحدي المعلومات')).trim();
   const shortQ = firstQ.length > 48 ? `${firstQ.slice(0, 48)}...` : firstQ;
   const isShorts = proj.template.aspectRatio !== '16:9';
+
+  if (isStoryProject) {
+    const hashtags = isShorts
+      ? ['#Shorts', '#قصص_وعبر', '#قصص_دينية', '#تدبر', '#تاريخ']
+      : ['#قصص_وعبر', '#قصص_دينية', '#وثائقي', '#تاريخ'];
+    const title = isShorts ? `${shortQ} #Shorts` : shortQ;
+    const description = isHybrid
+      ? `قصة مؤثرة مع تحدي التفاعل في نهاية الفيديو! 🌙✨\nهل تستطيع الإجابة على سؤال نهاية القصة في التعليقات؟ 👇\n\n${hashtags.join(' ')}`
+      : `قصة مؤثرة وعبرة خالدة في ثوانٍ معدودة 🌙✨\nشارك الفيديو مع من تحب ولا تنسَ الاشتراك في القناة!\n\n${hashtags.join(' ')}`;
+    const tags = ['قصص دينية', 'قصص وعبر', 'السيرة النبوية', 'قصص الأنبياء', 'شورتس', 'موعظة'];
+    const pinnedComment = isHybrid
+      ? 'ما رأيك في أحداث هذه القصة؟ وما هي إجابتك على سؤال النهاية؟ اكتب لنا في التعليقات 👇🌙'
+      : 'ما أكثر عبرة لمست قلبك في هذه القصة؟ اكتب لنا في التعليقات 👇🌙';
+    return { title, description, hashtags, tags, pinnedComment };
+  }
+
   const hashtags = isShorts
     ? ['#Shorts', '#أسئلة', '#تحدي_المعلومات', '#اختبر_ذكاءك', '#ثقافة_عامة']
     : ['#أسئلة', '#تحدي_المعلومات', '#اختبر_ذكاءك', '#ثقافة_عامة'];
@@ -245,6 +269,7 @@ export default function App() {
 
   const toolsMenuRef = useRef<HTMLDivElement | null>(null);
   const hasLocalMutationRef = useRef(false);
+  const autosaveTimerRef = useRef<number | null>(null);
   const projectRef = useRef(project);
   projectRef.current = project;
   const pastRef = useRef<QuizProject[]>([]);
@@ -397,8 +422,9 @@ export default function App() {
     (updater: (prev: QuizProject) => QuizProject, immediateHistory = false) => {
       hasLocalMutationRef.current = true;
       setProject((prev) => {
-        const next = updater(prev);
-        if (next === prev) return prev;
+        const nextRaw = updater(prev);
+        if (nextRaw === prev) return prev;
+        const next = { ...nextRaw, updatedAt: Date.now() };
         const now = Date.now();
         if (immediateHistory || now - lastHistoryPushTimeRef.current > 450 || pastRef.current.length === 0) {
           pastRef.current = [...pastRef.current.slice(-39), prev];
@@ -413,12 +439,28 @@ export default function App() {
     []
   );
 
+  const flushSaveCurrentProject = useCallback(async () => {
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    if (isLoaded) {
+      await saveProjectToStore(projectRef.current);
+    }
+  }, [isLoaded]);
+
   const handleUndo = useCallback(() => {
-    if (pastRef.current.length === 0) return;
+    const activeId = projectRef.current.id;
+    const validPast = pastRef.current.filter((snap) => snap.id === activeId);
+    if (validPast.length === 0) {
+      pastRef.current = [];
+      setCanUndo(false);
+      return;
+    }
     triggerHaptic('light');
-    const prevSnapshot = pastRef.current[pastRef.current.length - 1];
-    pastRef.current = pastRef.current.slice(0, -1);
-    futureRef.current = [projectRef.current, ...futureRef.current].slice(0, 40);
+    const prevSnapshot = validPast[validPast.length - 1];
+    pastRef.current = validPast.slice(0, -1);
+    futureRef.current = [projectRef.current, ...futureRef.current.filter((s) => s.id === activeId)].slice(0, 40);
     setProject(prevSnapshot);
     setActiveSlideIndex((idx) => Math.min(idx, Math.max(0, prevSnapshot.slides.length - 1)));
     setCanUndo(pastRef.current.length > 0);
@@ -426,11 +468,17 @@ export default function App() {
   }, []);
 
   const handleRedo = useCallback(() => {
-    if (futureRef.current.length === 0) return;
+    const activeId = projectRef.current.id;
+    const validFuture = futureRef.current.filter((snap) => snap.id === activeId);
+    if (validFuture.length === 0) {
+      futureRef.current = [];
+      setCanRedo(false);
+      return;
+    }
     triggerHaptic('light');
-    const nextSnapshot = futureRef.current[0];
-    futureRef.current = futureRef.current.slice(1);
-    pastRef.current = [...pastRef.current.slice(-39), projectRef.current];
+    const nextSnapshot = validFuture[0];
+    futureRef.current = validFuture.slice(1);
+    pastRef.current = [...pastRef.current.filter((s) => s.id === activeId).slice(-39), projectRef.current];
     setProject(nextSnapshot);
     setActiveSlideIndex((idx) => Math.min(idx, Math.max(0, nextSnapshot.slides.length - 1)));
     setCanUndo(pastRef.current.length > 0);
@@ -474,15 +522,28 @@ export default function App() {
 
   useEffect(() => {
     if (!isLoaded) return;
-    const timer = setTimeout(() => {
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+    }
+    autosaveTimerRef.current = window.setTimeout(() => {
+      autosaveTimerRef.current = null;
       void saveProjectToStore(project);
     }, 380);
-    return () => clearTimeout(timer);
+    return () => {
+      if (autosaveTimerRef.current !== null) {
+        window.clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+    };
   }, [project, isLoaded]);
 
   useEffect(() => {
     const flushSave = () => {
       if (isLoaded) {
+        if (autosaveTimerRef.current !== null) {
+          window.clearTimeout(autosaveTimerRef.current);
+          autosaveTimerRef.current = null;
+        }
         void saveProjectToStore(projectRef.current);
       }
     };
@@ -564,8 +625,27 @@ export default function App() {
   }, []);
 
   const audioSyncSigRef = useRef('');
+  const switchToProject = useCallback((loaded: QuizProject) => {
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    const clean = deepCloneProject(normalizeLoadedProject(loaded));
+    hasLocalMutationRef.current = true;
+    pastRef.current = [];
+    futureRef.current = [];
+    setCanUndo(false);
+    setCanRedo(false);
+    audioSyncSigRef.current = '';
+    kitEditedRef.current = false;
+    setProject(clean);
+    setActiveSlideIndex(0);
+    setAiNotice(null);
+  }, []);
+
   useEffect(() => {
     if (!isLoaded) return;
+    const targetProjectId = project.id;
     const urls: string[] = [];
     if (project.template.introHookAudio?.dataUrl) {
       urls.push(
@@ -585,12 +665,20 @@ export default function App() {
         }
       }
     );
+    if (project.audio.ambient?.sourceType === 'custom' && project.audio.ambient.customDataUrl) {
+      urls.push(
+        `amb:${project.audio.ambient.customDataUrl.slice(0, 32)}:${project.audio.ambient.customDataUrl.length}`
+      );
+    }
     project.slides.forEach((s, si) => {
       if (s.voiceover?.question?.dataUrl) {
         urls.push(`q${si}:${s.voiceover.question.dataUrl.slice(0, 32)}:${s.voiceover.question.dataUrl.length}`);
       }
       if (s.voiceover?.answer?.dataUrl) {
         urls.push(`an${si}:${s.voiceover.answer.dataUrl.slice(0, 32)}:${s.voiceover.answer.dataUrl.length}`);
+      }
+      if (s.voiceover?.explanation?.dataUrl) {
+        urls.push(`ex${si}:${s.voiceover.explanation.dataUrl.slice(0, 32)}:${s.voiceover.explanation.dataUrl.length}`);
       }
       s.voiceover?.options?.forEach((o, oi) => {
         if (o?.dataUrl) {
@@ -604,7 +692,7 @@ export default function App() {
       return;
     }
 
-    const sig = urls.join('|');
+    const sig = `${targetProjectId}|${urls.join('|')}`;
     if (audioSyncSigRef.current === sig) return;
     audioSyncSigRef.current = sig;
 
@@ -619,6 +707,7 @@ export default function App() {
       .then((synced) => {
         if (cancelled) return;
         setProject((prev) => {
+          if (prev.id !== targetProjectId) return prev;
           let changed = false;
           const nextSlides = prev.slides.map((s, idx) => {
             const ss = synced.slides[idx];
@@ -631,6 +720,10 @@ export default function App() {
               s.voiceover.answer?.dataUrl &&
               ss.voiceover.answer &&
               Math.abs((s.voiceover.answer.duration || 0) - ss.voiceover.answer.duration) > 0.02;
+            const expChanged =
+              s.voiceover.explanation?.dataUrl &&
+              ss.voiceover.explanation &&
+              Math.abs((s.voiceover.explanation.duration || 0) - ss.voiceover.explanation.duration) > 0.02;
             const optsChanged = Boolean(
               s.voiceover.options?.some(
                 (o, oi) =>
@@ -639,7 +732,7 @@ export default function App() {
                   Math.abs((o.duration || 0) - ss.voiceover.options[oi]!.duration) > 0.02
               )
             );
-            if (!qChanged && !ansChanged && !optsChanged) return s;
+            if (!qChanged && !ansChanged && !expChanged && !optsChanged) return s;
             changed = true;
             return { ...s, voiceover: ss.voiceover };
           });
@@ -674,8 +767,7 @@ export default function App() {
           if (
             prev.template.endCardAudio?.dataUrl &&
             synced.template.endCardAudio &&
-            Math.abs((prev.template.endCardAudio.duration || 0) - synced.template.endCardAudio.duration) >
-              0.02
+            Math.abs((prev.template.endCardAudio.duration || 0) - synced.template.endCardAudio.duration) > 0.02
           ) {
             changed = true;
             nextTemplate = { ...nextTemplate, endCardAudio: synced.template.endCardAudio };
@@ -690,7 +782,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [isLoaded, project.slides, project.audio, project.template]);
+  }, [isLoaded, project.id, project.slides, project.audio, project.template]);
 
   const totalDuration = getTotalDuration(
     project.slides,
@@ -711,33 +803,45 @@ export default function App() {
     [updateProject]
   );
 
-  const handleAddSlide = useCallback(() => {
-    updateProject((prev) => {
-      const nextNum = prev.slides.length + 1;
-      const newSlide: QuestionSlide = {
-        id: `slide-${Date.now()}`,
-        badgeText: `السؤال ${nextNum}`,
-        question: 'اكتب نص السؤال الجديد هنا',
-        options: ['الجواب الصحيح', 'خيار خاطئ 1', 'خيار خاطئ 2', 'خيار خاطئ 3'],
-        correctIndex: 0,
-        explanationText: '',
-      };
-      const nextSlides = [...prev.slides, newSlide];
-      setActiveSlideIndex(nextSlides.length - 1);
-      return { ...prev, slides: nextSlides };
-    }, true);
-  }, [updateProject]);
+  const handleAddSlide = useCallback(
+    (initialType?: SlideType) => {
+      updateProject((prev) => {
+        const nextNum = prev.slides.length + 1;
+        const isStory = initialType === 'storyScene';
+        const newSlide: QuestionSlide = isStory
+          ? {
+              id: createUniqueId('slide'),
+              slideType: 'storyScene',
+              badgeText: `المشهد ${nextNum}`,
+              question: 'في ليلةٍ هادئةٍ تحت ضوء النجوم، بدأت الحكاية...',
+              storyLayoutStyle: 'cinematicBottom',
+              options: ['', '', '', ''],
+              correctIndex: 0,
+              explanationText: '',
+            }
+          : {
+              id: createUniqueId('slide'),
+              slideType: initialType || 'multiple',
+              badgeText: `السؤال ${nextNum}`,
+              question: 'اكتب نص السؤال الجديد هنا',
+              options: ['الجواب الصحيح', 'خيار خاطئ 1', 'خيار خاطئ 2', 'خيار خاطئ 3'],
+              correctIndex: 0,
+              explanationText: '',
+            };
+        const nextSlides = [...prev.slides, newSlide];
+        setActiveSlideIndex(nextSlides.length - 1);
+        return { ...prev, slides: nextSlides };
+      }, true);
+    },
+    [updateProject]
+  );
 
   const handleDuplicateSlide = useCallback(
     (idx: number) => {
       updateProject((prev) => {
         const source = prev.slides[idx];
         if (!source) return prev;
-        const copy: QuestionSlide = {
-          ...source,
-          id: `slide-${Date.now()}`,
-          options: [...source.options] as [string, string, string, string],
-        };
+        const copy = deepCloneSlide(source, true);
         const nextSlides = [
           ...prev.slides.slice(0, idx + 1),
           copy,
@@ -1157,6 +1261,7 @@ export default function App() {
                 slides={project.slides}
                 activeIndex={activeSlideIndex}
                 aiVoiceName={project.preferredAiVoice ?? 'Kore'}
+                aspectRatio={project.template.aspectRatio}
                 onAiVoiceChange={(voice) =>
                   updateProject((prev) => ({ ...prev, preferredAiVoice: voice }), true)
                 }
@@ -1175,6 +1280,7 @@ export default function App() {
             {activeTab === 'ai' && (
               <AiGeneratorPanel
                 voiceName={project.preferredAiVoice ?? 'Kore'}
+                aspectRatio={project.template.aspectRatio}
                 existingQuestions={project.slides.map((s) => s.question)}
                 vaultRefreshTrigger={vaultRefreshTrigger}
                 aiPresenterConfigured={aiPresenterConfigured}
@@ -1305,8 +1411,7 @@ export default function App() {
                   );
                 }}
                 onImportFullProject={(loaded) => {
-                  updateProject(() => normalizeLoadedProject(loaded), true);
-                  setActiveSlideIndex(0);
+                  switchToProject(loaded);
                 }}
               />
             )}
@@ -1543,10 +1648,9 @@ export default function App() {
         isOpen={isProjectsOpen}
         currentProject={project}
         onClose={() => setIsProjectsOpen(false)}
+        onBeforeSwitchProject={flushSaveCurrentProject}
         onSelectProject={(loaded) => {
-          updateProject(() => normalizeLoadedProject(loaded), true);
-          setActiveSlideIndex(0);
-          setAiNotice(null);
+          switchToProject(loaded);
         }}
         onRenameCurrent={(name) =>
           updateProject((prev) => ({ ...prev, name }), true)

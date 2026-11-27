@@ -156,10 +156,21 @@ export function collectSoundEventsInInterval(
     const tThink = base + sched.tThinkingStart;
     const tSus = base + sched.tSuspenseStart;
     const tReveal = base + sched.tRevealStart;
+    if (slide?.slideType === 'storyScene') {
+      if (prevTime < tQ && currTime >= tQ && slide.voiceover?.question?.dataUrl) {
+        events.push({
+          type: 'questionEnter',
+          slideIndex: sIdx,
+          maxDuration: Math.max(0.25, nextSlideStart - tQ - 0.02),
+        });
+      }
+      continue;
+    }
+
     const optCount =
       slide?.slideType === 'trueFalse' || slide?.slideType === 'versus'
         ? 2
-        : slide?.slideType === 'clues'
+        : slide?.slideType === 'clues' || slide?.slideType === 'multiple3'
           ? 3
           : 4;
     const hasAnyOptVoice = Array.from({ length: optCount }).some((_, oi) =>
@@ -4300,6 +4311,204 @@ function drawAudioWaveformVisualizer(
   ctx.restore();
 }
 
+let storyArtCacheCanvas: HTMLCanvasElement | null = null;
+let storyArtCacheKey = '';
+
+function renderStorySceneSlideBody(
+  ctx: CanvasRenderingContext2D,
+  slide: QuestionSlide,
+  slideIndex: number,
+  totalSlides: number,
+  localTime: number,
+  schedule: SlideSchedule,
+  template: TemplateSettings,
+  slideImg: HTMLImageElement | null,
+  W: number,
+  H: number,
+  isWide: boolean,
+  fontStack: string
+): { narrationBottomY: number } {
+  const sceneDur = Math.max(1.5, schedule.duration);
+  const progress = clamp01(localTime / sceneDur);
+  const enterEase = easeOutCubic(clamp01((localTime - schedule.tQuestionStart) / 0.42));
+  const accentColor =
+    (template.brandAccentColor || '').trim() ||
+    (template.questionBorderColor || '').trim() ||
+    '#D4A73A';
+
+  // 1. Full-bleed Scene Artwork with Smooth Ken Burns Motion & Cached bgFilter
+  if (slideImg && slideImg.naturalWidth > 0 && slideImg.naturalHeight > 0 && typeof document !== 'undefined') {
+    const bgFilter: BackgroundFilterId = template.bgFilter || 'none';
+    const bgFilterIntensity = clamp01(template.bgFilterIntensity ?? 0.65);
+    const imgTag = (slide.imageDataUrl || '').slice(0, 48) + ':' + (slide.imageDataUrl?.length ?? 0);
+    const nextArtKey = `${W}x${H}|${imgTag}|${bgFilter}|${bgFilterIntensity.toFixed(2)}`;
+
+    if (!storyArtCacheCanvas) {
+      storyArtCacheCanvas = document.createElement('canvas');
+    }
+    if (storyArtCacheCanvas.width !== W || storyArtCacheCanvas.height !== H) {
+      storyArtCacheCanvas.width = W;
+      storyArtCacheCanvas.height = H;
+      storyArtCacheKey = '';
+    }
+    if (storyArtCacheKey !== nextArtKey) {
+      const actx = storyArtCacheCanvas.getContext('2d', { alpha: false });
+      if (actx) {
+        actx.imageSmoothingEnabled = true;
+        actx.imageSmoothingQuality = 'high';
+        actx.fillStyle = '#090c14';
+        actx.fillRect(0, 0, W, H);
+        const imgAspect = slideImg.naturalWidth / slideImg.naturalHeight;
+        const canvasAspect = W / H;
+        let drawW = W;
+        let drawH = H;
+        let offsetX = 0;
+        let offsetY = 0;
+        if (imgAspect > canvasAspect) {
+          drawH = H;
+          drawW = drawH * imgAspect;
+          offsetX = (W - drawW) / 2;
+        } else {
+          drawW = W;
+          drawH = drawW / imgAspect;
+          offsetY = (H - drawH) / 2;
+        }
+        actx.drawImage(slideImg, offsetX, offsetY, drawW, drawH);
+        applyBackdropFilterPixels(actx, W, H, bgFilter, bgFilterIntensity);
+        storyArtCacheKey = nextArtKey;
+      }
+    }
+
+    const dir = slideIndex % 2 === 0 ? 1 : -1;
+    const kbZoom = 1.02 + progress * 0.08;
+    const kbPanX = dir * (progress - 0.5) * (isWide ? 42 : 28);
+    const kbPanY = (0.5 - progress) * 22;
+
+    ctx.save();
+    ctx.translate(W / 2 + kbPanX, H / 2 + kbPanY);
+    ctx.scale(kbZoom, kbZoom);
+    ctx.drawImage(storyArtCacheCanvas, -W / 2, -H / 2);
+    ctx.restore();
+  }
+
+  // 2. Atmospheric Readability Scrims (top & bottom cinematic vignettes)
+  ctx.save();
+  const topScrim = ctx.createLinearGradient(0, 0, 0, H * 0.34);
+  topScrim.addColorStop(0, 'rgba(5, 8, 16, 0.72)');
+  topScrim.addColorStop(1, 'rgba(5, 8, 16, 0)');
+  ctx.fillStyle = topScrim;
+  ctx.fillRect(0, 0, W, H * 0.34);
+
+  const botScrim = ctx.createLinearGradient(0, H * 0.42, 0, H);
+  botScrim.addColorStop(0, 'rgba(5, 8, 16, 0)');
+  botScrim.addColorStop(0.55, 'rgba(5, 8, 16, 0.62)');
+  botScrim.addColorStop(1, 'rgba(5, 8, 16, 0.88)');
+  ctx.fillStyle = botScrim;
+  ctx.fillRect(0, H * 0.42, W, H * 0.58);
+  ctx.restore();
+
+  // 3. Top Scene Header Badge
+  const badgeText = (slide.badgeText || `المشهد ${slideIndex + 1}`).trim();
+  if (badgeText) {
+    ctx.save();
+    ctx.globalAlpha *= enterEase;
+    const badgeY = isWide ? 64 : 184;
+    ctx.font = `800 ${isWide ? 28 : 30}px ${fontStack}`;
+    ctx.direction = 'rtl';
+    const labelStr =
+      totalSlides > 1 && template.showProgressCounter
+        ? `${badgeText} · ${slideIndex + 1}/${totalSlides}`
+        : badgeText;
+    const bW = Math.min(W - 140, Math.max(210, ctx.measureText(labelStr).width + 64));
+    const bH = isWide ? 54 : 58;
+    drawRoundedRect(ctx, W / 2 - bW / 2, badgeY - bH / 2, bW, bH, bH / 2);
+    ctx.fillStyle = 'rgba(10, 14, 24, 0.78)';
+    ctx.fill();
+    ctx.strokeStyle = hexToRgba(accentColor, 0.8);
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    ctx.fillStyle = accentColor;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(labelStr, W / 2, badgeY + 2);
+    ctx.restore();
+  }
+
+  // 4. Story Narration Card (respecting YouTube Shorts safe margins!)
+  const layoutStyle = slide.storyLayoutStyle || 'cinematicBottom';
+  const narration = (slide.question || '').trim();
+  const cardW = isWide ? Math.min(W - 220, 1280) : Math.min(W - 110, 900);
+  const centerX = isWide ? W / 2 : W / 2 - 18; // slight left bias to clear right-side Shorts buttons
+  const fontSize = Math.max(30, Math.min(58, Math.round((template.questionFontSize || 46) * (isWide ? 0.94 : 0.92))));
+  const lineH = Math.round(fontSize * 1.48);
+
+  ctx.save();
+  ctx.font = `800 ${fontSize}px ${fontStack}`;
+  ctx.direction = 'rtl';
+  const lines = narration ? wrapArabicText(ctx, narration, cardW - 84).slice(0, 6) : [];
+  const cardH = Math.max(150, lines.length * lineH + 68);
+
+  let cardCenterY = isWide ? H * 0.73 : H * 0.69;
+  if (layoutStyle === 'centerVerse') {
+    cardCenterY = isWide ? H * 0.52 : H * 0.50;
+  } else if (layoutStyle === 'topCard') {
+    cardCenterY = isWide ? H * 0.30 : H * 0.31;
+  }
+
+  // Keep bottom inside safe area above YouTube Shorts footer (H - 325)
+  const maxSafeY = isWide ? H - 130 - cardH / 2 : H - 325 - cardH / 2;
+  const minSafeY = isWide ? 120 + cardH / 2 : 250 + cardH / 2;
+  cardCenterY = Math.max(minSafeY, Math.min(maxSafeY, cardCenterY));
+
+  const slideOffsetY = (1 - enterEase) * 28;
+  ctx.globalAlpha *= enterEase;
+  ctx.translate(centerX, cardCenterY + slideOffsetY);
+
+  drawStyledBoxContainer(ctx, {
+    x: -cardW / 2,
+    y: -cardH / 2,
+    w: cardW,
+    h: cardH,
+    radius: Math.max(22, template.questionBorderRadius || 28),
+    fillColorHex: template.questionBoxColor || '#0b101d',
+    fillRgba:
+      layoutStyle === 'centerVerse'
+        ? 'rgba(11, 16, 29, 0.84)'
+        : 'rgba(8, 12, 22, 0.80)',
+    opacity: 0.84,
+    borderColor: accentColor,
+    borderWidth: layoutStyle === 'centerVerse' ? 3.5 : 2.5,
+    boxStyle: template.boxStyle || 'glass',
+    borderStyle: template.borderStyle || 'solid',
+    boxGloss: template.boxGloss ?? true,
+    enhanced: template.enhanceAppearance ?? true,
+    shadowIntensity: 1.05,
+    glowIntensity: layoutStyle === 'centerVerse' ? 0.35 : 0.15,
+  });
+
+  // Top decorative golden divider inside card
+  ctx.fillStyle = hexToRgba(accentColor, 0.85);
+  drawRoundedRect(ctx, -56, -cardH / 2 + 12, 112, 4, 2);
+  ctx.fill();
+
+  ctx.font = `800 ${fontSize}px ${fontStack}`;
+  ctx.direction = 'rtl';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const startTextY = -((lines.length - 1) * lineH) / 2 + 4;
+  lines.forEach((ln, idx) => {
+    const ly = startTextY + idx * lineH;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.fillText(ln, 0, ly + 3);
+    ctx.fillStyle = template.questionTextColor || '#FFFFFF';
+    ctx.fillText(ln, 0, ly);
+  });
+
+  ctx.restore();
+  return { narrationBottomY: cardCenterY + cardH / 2 };
+}
+
 export function renderQuizFrame(
   ctx: CanvasRenderingContext2D,
   globalTime: number,
@@ -5220,6 +5429,93 @@ export function renderQuizFrame(
       ctx.scale(s, s);
       ctx.translate(-W / 2, -H / 2);
     }
+  }
+
+  if (slide.slideType === 'storyScene') {
+    const { narrationBottomY } = renderStorySceneSlideBody(
+      ctx,
+      slide,
+      slideIndex,
+      slides.length,
+      localTime,
+      schedule,
+      template,
+      slideImg,
+      W,
+      H,
+      isWide,
+      fontStack
+    );
+
+    ctx.restore();
+
+    if (slideTrans === 'wipeGold' && (transInProg < 1 || transOutProg > 0)) {
+      const sweepProg = transOutProg > 0 ? transOutProg * 0.5 : 0.5 + transInProg * 0.5;
+      const beamX = -W * 0.25 + W * 1.5 * sweepProg;
+      const beamAlpha = Math.sin(sweepProg * Math.PI) * 0.55;
+      if (beamAlpha > 0.02) {
+        ctx.save();
+        const beamGrad = ctx.createLinearGradient(beamX - 180, 0, beamX + 180, H * 0.25);
+        beamGrad.addColorStop(0, 'rgba(237, 214, 162, 0)');
+        beamGrad.addColorStop(0.5, `rgba(255, 243, 176, ${beamAlpha.toFixed(3)})`);
+        beamGrad.addColorStop(1, 'rgba(237, 214, 162, 0)');
+        ctx.fillStyle = beamGrad;
+        ctx.fillRect(0, 0, W, H);
+        ctx.restore();
+      }
+    }
+
+    drawBrandWatermark(ctx, template, globalTime, W, H, fontStack);
+
+    const aiStoryTiming = computeAiPresenterFrameTiming(globalTime, slides, template, timing, audio);
+    if (aiStoryTiming && template.aiPresenter?.enabled) {
+      const pRect = resolveAiPresenterRect(template.aiPresenter, W, H, template.aspectRatio);
+      drawAiPresenterVideoFrame(ctx, template, template.aiPresenter, pRect, fontStack, {
+        videoTimeSec: aiStoryTiming.videoTimeSec,
+        globalTime,
+        isIdleAfterSpeech: aiStoryTiming.isIdleAfterSpeech,
+      });
+    } else if (template.presenterEnabled) {
+      const choreo = computePresenterChoreography(
+        globalTime,
+        template,
+        'readingQuestion',
+        Math.max(0, localTime - tQuestionStart),
+        slide,
+        schedule,
+        localTime,
+        {
+          forcedPose: interactiveState?.demoPresenterPose ?? null,
+          animClock: interactiveState?.demoPresenterAnimClock,
+          isLivePlayback: interactiveState?.isLivePlayback ?? !isPreview,
+        }
+      );
+      const pRect = resolveSlidePresenterRect(template, W, H);
+      drawPresenterHostFrame(ctx, template, choreo, pRect, fontStack);
+    }
+
+    if (template.showDynamicCaptions) {
+      const captionState = computeActiveCaptionState(slide, localTime, schedule);
+      drawDynamicCaptionsOverlay(ctx, captionState, template, W, H, fontStack);
+    }
+
+    drawAudioWaveformVisualizer(
+      ctx,
+      template,
+      globalTime,
+      slides,
+      timing,
+      audio,
+      W,
+      H,
+      isPreview,
+      interactiveState,
+      narrationBottomY + 38
+    );
+
+    drawCinematicVideoProgressBar(ctx, template, globalTime, slides, timing, audio, W);
+    ctx.restore();
+    return;
   }
 
   const layout = computeStageLayerLayout(

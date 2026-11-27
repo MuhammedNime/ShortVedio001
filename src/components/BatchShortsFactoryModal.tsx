@@ -664,17 +664,20 @@ export const BatchShortsFactoryModal: React.FC<BatchShortsFactoryModalProps> = (
   };
 
   const toQuizProjects = (episodes: FactoryDraftEpisode[]): QuizProject[] =>
-    episodes.map((ep, idx) => ({
-      ...createDefaultProject(),
-      id: ep.id,
-      name: ep.name,
-      preferredAiVoice: voiceName,
-      slides: ep.slides,
-      template: ep.template,
-      timing: ep.timing,
-      audio: ep.audio,
-      updatedAt: Date.now() + idx,
-    }));
+    episodes.map((ep, idx) => {
+      const base = createDefaultProject();
+      return {
+        ...base,
+        id: ep.id,
+        name: ep.name,
+        preferredAiVoice: voiceName,
+        slides: JSON.parse(JSON.stringify(ep.slides)) as QuestionSlide[],
+        template: JSON.parse(JSON.stringify(ep.template)) as QuizProject['template'],
+        timing: JSON.parse(JSON.stringify(ep.timing)) as QuizProject['timing'],
+        audio: JSON.parse(JSON.stringify(ep.audio)) as QuizProject['audio'],
+        updatedAt: Date.now() + idx,
+      };
+    });
 
   const markPoolItemsUsedIfAny = async (episodes: FactoryDraftEpisode[]) => {
     const usedIds = episodes.flatMap((e) => e.sourceBankIds);
